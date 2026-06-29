@@ -7,6 +7,7 @@ import os
 import argparse
 import random
 import time
+import re
 import logging
 
 # Setup Logging
@@ -22,6 +23,14 @@ USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/120.0",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15"
 ]
+
+# Words that indicate a question/explanation structure
+QUESTION_WORDS_EN = r"\b(how|why|what|who|where|which|can|should|is|are|does|do|did|explain|definition)\b"
+QUESTION_WORDS_DE = r"\b(wie|warum|was|wer|wo|welche|kann|soll|ist|sind|erkläre|definition|bedeutung)\b"
+QUESTION_PATTERN = re.compile(
+    rf"({QUESTION_WORDS_EN}|{QUESTION_WORDS_DE})", 
+    re.IGNORECASE
+)
 
 class FinnyKnowledgeCrawler:
     def __init__(self, seed_urls, output_file, max_pages=100000, max_concurrency=40, delay_per_domain=0.5):
@@ -51,41 +60,33 @@ class FinnyKnowledgeCrawler:
                     self.domain_visited[domain] = set()
                 self.domain_queues[domain].put_nowait(url)
 
-    def parse_wikipedia(self, html, url):
-        """Extracts concepts and their definitions from Wikipedia articles."""
-        soup = BeautifulSoup(html, "html.parser")
-        
-        # Get the main page title
+    def extract_wikipedia_definition(self, soup, url):
+        """Extracts concept definition from Wikipedia articles."""
         title_el = soup.find("h1", id="firstHeading")
         if not title_el:
             return None
         concept = title_el.get_text().strip()
         
-        # We only want actual articles, skip special pages
         if ":" in concept and not concept.startswith("Category:"):
             return None
 
-        # Extract the introduction (paragraphs before the first TOC or H2 section)
         body = soup.find("div", id="mw-content-text")
         if not body:
             return None
             
         paragraphs = []
         for child in body.find_all("p", recursive=True):
-            # Skip empty paragraphs or coordinates
             p_text = child.get_text().strip()
-            if len(p_text) > 40:
+            if len(p_text) > 50:
                 paragraphs.append(p_text)
-            if len(paragraphs) >= 3:  # Keep first 3 paragraphs as the definition
+            if len(paragraphs) >= 3:
                 break
                 
         if not paragraphs:
             return None
             
         definition = "\n".join(paragraphs)
-        
-        # Clean up citation marks like [1], [2], etc.
-        definition = re.sub(r'\[\d+\]', '', definition)
+        definition = re.sub(r'\[\d+\]', '', definition)  # Remove citations
         
         return {
             "type": "definition",
@@ -95,11 +96,8 @@ class FinnyKnowledgeCrawler:
             "timestamp": int(time.time())
         }
 
-    def parse_stackexchange(self, html, url):
-        """Extracts questions and high-quality answers from StackExchange sites."""
-        soup = BeautifulSoup(html, "html.parser")
-        
-        # Get the question title
+    def extract_stackexchange_qa(self, soup, url):
+        """Extracts structured questions and answers from Q&A platforms."""
         title_el = soup.find("a", class_="question-hyperlink")
         if not title_el:
             title_el = soup.find("h1")
@@ -107,26 +105,18 @@ class FinnyKnowledgeCrawler:
             return None
         question = title_el.get_text().strip()
 
-        # Find the best answer (accepted answer first, or highest voted one)
-        # Class "accepted-answer" marks the accepted one
         answer_div = soup.find("div", class_="accepted-answer")
         if not answer_div:
-            # Fallback to the first answer div in the list
             answer_div = soup.find("div", class_="answer")
             
         if not answer_div:
             return None
             
-        # Get the body of the answer
         answer_body = answer_div.find("div", class_="js-post-body")
         if not answer_body:
             return None
             
-        # Remove code blocks if they are too long or nested, but keep simple explanations
-        # Get text
         answer_text = answer_body.get_text(separator=" ").strip()
-        
-        # Clean up whitespace
         lines = (line.strip() for line in answer_text.splitlines())
         chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
         answer_clean = "\n".join(chunk for chunk in chunks if chunk)
@@ -142,8 +132,70 @@ class FinnyKnowledgeCrawler:
             "timestamp": int(time.time())
         }
 
+    def extract_general_knowledge(self, soup, url):
+        """Extracts Q&A and definitions dynamically from ANY general web page."""
+        title_el = soup.find("title")
+        page_title = title_el.get_text().strip() if title_el else ""
+        
+        extracted_units = []
+
+        # 1. Look for Question-Answer structures (headings followed by text)
+        headings = soup.find_all(["h1", "h2", "h3"])
+        for h in headings:
+            heading_text = h.get_text().strip()
+            
+            # Check if heading is a question (ends with '?' or contains question words)
+            is_question = heading_text.endswith("?") or QUESTION_PATTERN.search(heading_text)
+            if is_question and len(heading_text) > 10 and len(heading_text) < 150:
+                # Find paragraphs immediately following this heading
+                paragraphs = []
+                sibling = h.find_next_sibling()
+                while sibling and sibling.name not in ["h1", "h2", "h3"]:
+                    if sibling.name == "p":
+                        p_text = sibling.get_text().strip()
+                        if len(p_text) > 40:
+                            paragraphs.append(p_text)
+                    sibling = sibling.find_next_sibling()
+                    if len(paragraphs) >= 3:
+                        break
+                
+                if paragraphs:
+                    answer_text = "\n".join(paragraphs)
+                    extracted_units.append({
+                        "type": "qa",
+                        "question": heading_text,
+                        "text": answer_text,
+                        "url": url,
+                        "timestamp": int(time.time())
+                    })
+
+        # 2. If no Q&A headings found, fall back to extracting the lead text as a concept definition
+        if not extracted_units and len(page_title) > 5:
+            # Clean page title (e.g. remove " - Wikipedia", " | Spiegel" etc.)
+            clean_title = re.split(r'\s+[-|•]\s+', page_title)[0].strip()
+            
+            paragraphs = []
+            for p in soup.find_all("p"):
+                p_text = p.get_text().strip()
+                if len(p_text) > 60:
+                    paragraphs.append(p_text)
+                if len(paragraphs) >= 2:
+                    break
+            
+            if paragraphs:
+                definition_text = "\n".join(paragraphs)
+                extracted_units.append({
+                    "type": "definition",
+                    "concept": clean_title,
+                    "text": definition_text,
+                    "url": url,
+                    "timestamp": int(time.time())
+                })
+
+        return extracted_units
+
     def extract_links(self, html_content, base_url, target_domain):
-        """Extracts internal links to continue crawling."""
+        """Extracts internal and external links to explore the web randomly."""
         soup = BeautifulSoup(html_content, "html.parser")
         links = []
         for anchor in soup.find_all("a", href=True):
@@ -151,11 +203,8 @@ class FinnyKnowledgeCrawler:
             full_url = urljoin(base_url, href)
             parsed = urlparse(full_url)
             
-            if parsed.scheme in ("http", "https") and parsed.netloc == target_domain:
-                # Exclude administrative pages on wikipedia
-                if "wikipedia.org" in target_domain:
-                    if any(x in parsed.path for x in ["/wiki/Special:", "/wiki/Help:", "/wiki/Wikipedia:", "/wiki/Talk:", "/wiki/File:"]):
-                        continue
+            if parsed.scheme in ("http", "https"):
+                # Clean URL (discard anchors/queries to avoid loops)
                 clean_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
                 links.append(clean_url)
         return links
@@ -213,70 +262,80 @@ class FinnyKnowledgeCrawler:
             html = await self.fetch_page(session, url)
             
             if html:
-                parsed_data = None
-                if "wikipedia.org" in target_domain:
-                    parsed_data = self.parse_wikipedia(html, url)
-                elif "stackexchange.com" in target_domain or "stackoverflow.com" in target_domain:
-                    parsed_data = self.parse_stackexchange(html, url)
+                soup = BeautifulSoup(html, "html.parser")
                 
-                if parsed_data:
+                # Check page type and extract knowledge structure accordingly
+                extracted_data_list = []
+                if "wikipedia.org" in target_domain:
+                    wiki_def = self.extract_wikipedia_definition(soup, url)
+                    if wiki_def:
+                        extracted_data_list.append(wiki_def)
+                elif "stackexchange.com" in target_domain or "stackoverflow.com" in target_domain:
+                    se_qa = self.extract_stackexchange_qa(soup, url)
+                    if se_qa:
+                        extracted_data_list.append(se_qa)
+                else:
+                    # General web page parser (looks for Q&A structures and concept definitions)
+                    extracted_data_list = self.extract_general_knowledge(soup, url)
+                
+                # Save extracted units
+                for data in extracted_data_list:
                     self.pages_scraped += 1
-                    await self.save_to_jsonl(parsed_data)
+                    await self.save_to_jsonl(data)
                     
                     if self.pages_scraped % 100 == 0:
-                        logger.info(f"Progress: {self.pages_scraped} knowledge units scraped total.")
-                        
-                # Extract and enqueue new links
+                        logger.info(f"Progress: {self.pages_scraped} general knowledge units scraped.")
+
+                # Extract and enqueue links (internal to stay on site, external to expand seeds)
                 links = self.extract_links(html, url, target_domain)
                 for link in links:
-                    if link not in visited:
-                        queue.put_nowait(link)
+                    parsed_link = urlparse(link)
+                    domain = parsed_link.netloc
+                    
+                    if domain:
+                        # Dynamically add new domains to crawl to keep things random and general!
+                        if domain not in self.domain_queues:
+                            self.domain_queues[domain] = asyncio.Queue()
+                            self.domain_visited[domain] = set()
+                        
+                        if link not in self.domain_visited[domain]:
+                            self.domain_queues[domain].put_nowait(link)
                             
             queue.task_done()
             self.active_domains.remove(target_domain)
             await asyncio.sleep(0.01)
 
     async def run(self):
-        logger.info(f"Starting FinnyCrawlerV2. Target: {self.max_pages} Q&A and Concept units.")
+        logger.info(f"Starting General Knowledge FinnyCrawlerV2. Target: {self.max_pages} units.")
         os.makedirs(os.path.dirname(os.path.abspath(self.output_file)), exist_ok=True)
         
         async with aiohttp.ClientSession() as session:
             workers = [asyncio.create_task(self.worker(session)) for _ in range(self.max_concurrency)]
             await asyncio.gather(*workers)
             
-        logger.info(f"Finished. Scraped {self.pages_scraped} units to {self.output_file}.")
+        logger.info(f"Finished. Scraped {self.pages_scraped} knowledge units to {self.output_file}.")
 
-import re
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="FinnyCrawler V2 - Concept Definition and Q&A Extractor")
-    parser.add_argument("--limit", type=int, default=50000, help="Maximum units to scrape")
+    parser = argparse.ArgumentParser(description="FinnyCrawler V2 - General Knowledge & Reasoning Extractor")
+    parser.add_argument("--limit", type=int, default=100000, help="Maximum units to scrape")
     parser.add_argument("--concurrency", type=int, default=40, help="Total parallel workers")
     parser.add_argument("--delay", type=float, default=0.5, help="Delay per domain")
     parser.add_argument("--output", type=str, default="data/knowledge_data.jsonl", help="Output path")
     args = parser.parse_args()
 
-    # Seeds specifically chosen for high-quality definitions and explanations (Wikis & StackExchange)
+    # Highly diverse seeds to start crawling the general web randomly
     seeds = [
-        # Concept/Definition Seeds
-        "https://en.wikipedia.org/wiki/Artificial_intelligence",
-        "https://en.wikipedia.org/wiki/Computer_science",
-        "https://en.wikipedia.org/wiki/Physics",
-        "https://en.wikipedia.org/wiki/Mathematics",
-        "https://en.wikipedia.org/wiki/Philosophy",
-        "https://de.wikipedia.org/wiki/K%C3%BCnstliche_Intelligenz",
-        "https://de.wikipedia.org/wiki/Informatik",
-        "https://de.wikipedia.org/wiki/Physik",
-        
-        # Q&A / Explanation Seeds
-        "https://stackoverflow.com/questions?tab=Active",
-        "https://cs.stackexchange.com/questions",
-        "https://physics.stackexchange.com/questions",
-        "https://math.stackexchange.com/questions",
-        "https://philosophy.stackexchange.com/questions",
-        "https://ai.stackexchange.com/questions",
-        "https://codereview.stackexchange.com/questions",
-        "https://datascience.stackexchange.com/questions"
+        "https://en.wikipedia.org/wiki/Special:Random",  # Start randomly on English Wikipedia
+        "https://de.wikipedia.org/wiki/Spezial:Zuf%C3%A4llige_Seite",  # Start randomly on German Wikipedia
+        "https://news.ycombinator.com/",
+        "https://www.bbc.com/news",
+        "https://www.spiegel.de/",
+        "https://www.gutenberg.org/",
+        "https://www.nytimes.com/",
+        "https://www.nature.com/",
+        "https://www.britannica.com/",
+        "https://archive.org/"
     ]
 
     crawler = FinnyKnowledgeCrawler(
