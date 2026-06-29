@@ -16,7 +16,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("FinnyCrawler")
 
-# Rotate user agents to avoid detection
+# Rotate user agents to look like real browser traffic
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -26,45 +26,48 @@ USER_AGENTS = [
 ]
 
 class FinnyCrawler:
-    def __init__(self, seed_urls, output_file, max_pages=100000, concurrency_per_domain=5, total_concurrency=40):
+    def __init__(self, seed_urls, output_file, max_pages=100000, max_concurrency=40, delay_per_domain=0.5):
         self.seed_urls = seed_urls
         self.output_file = output_file
         self.max_pages = max_pages
-        self.total_concurrency = total_concurrency
-        self.concurrency_per_domain = concurrency_per_domain
+        self.max_concurrency = max_concurrency
+        self.delay_per_domain = delay_per_domain
         
-        # Track state
+        # Global visited set
         self.visited = set()
         self.pages_scraped = 0
         
-        # We group URLs and queues by domain to crawl multiple websites in parallel
+        # Domain management to prevent bans:
+        # We store queues separately for each domain.
         self.domain_queues = {}
         self.domain_visited = {}
-        self.active_workers_per_domain = {}
         
-        # Write lock for JSONL output file
+        # Track when we last fetched from each domain
+        self.last_fetch_time = {}
+        # Track domains currently being requested to ensure concurrency-per-domain is strictly 1
+        self.active_domains = set()
+        
+        # Write lock for JSONL
         self.write_lock = asyncio.Lock()
 
-        # Initialize queues for each seed domain
+        # Initialize seeds
         for url in self.seed_urls:
             parsed = urlparse(url)
             domain = parsed.netloc
-            if domain not in self.domain_queues:
-                self.domain_queues[domain] = asyncio.Queue()
-                self.domain_visited[domain] = set()
-                self.active_workers_per_domain[domain] = 0
-            
-            self.domain_queues[domain].put_nowait(url)
+            if domain:
+                if domain not in self.domain_queues:
+                    self.domain_queues[domain] = asyncio.Queue()
+                    self.domain_visited[domain] = set()
+                self.domain_queues[domain].put_nowait(url)
 
     def clean_text(self, html_content):
-        """Extracts and filters clean text from HTML, removing headers, footers, scripts, styles."""
-        soup = BeautifulSoup(html_content, "lxml" if "lxml" in html_content else "html.parser")
+        """Extracts and filters clean text from HTML."""
+        soup = BeautifulSoup(html_content, "html.parser")
         
-        # Remove non-content elements
+        # Remove junk elements
         for element in soup(["script", "style", "nav", "footer", "header", "aside", "noscript", "iframe"]):
             element.extract()
             
-        # Get text
         text = soup.get_text(separator=" ")
         
         # Clean up whitespace
@@ -76,7 +79,7 @@ class FinnyCrawler:
         return title, clean_text
 
     def extract_links(self, html_content, base_url, target_domain):
-        """Extracts valid internal links to stay on the same website for deep scraping."""
+        """Extracts internal links to stay on the same website per worker loop."""
         soup = BeautifulSoup(html_content, "html.parser")
         links = []
         for anchor in soup.find_all("a", href=True):
@@ -84,61 +87,76 @@ class FinnyCrawler:
             full_url = urljoin(base_url, href)
             parsed = urlparse(full_url)
             
-            # Stay on the same website/domain to keep workers separated
+            # Stay on the same domain
             if parsed.scheme in ("http", "https") and parsed.netloc == target_domain:
                 clean_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
                 links.append(clean_url)
         return links
 
     async def fetch_page(self, session, url):
-        """Fetches the page HTML instantly without artificial delay."""
+        """Fetches the page HTML safely with user-agent rotation."""
         headers = {
             "User-Agent": random.choice(USER_AGENTS),
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
         }
         try:
-            # Short timeout of 5 seconds to skip slow pages
             async with session.get(url, headers=headers, timeout=5) as response:
                 if response.status == 200:
                     return await response.text()
+                elif response.status == 429:
+                    logger.warning(f"Rate limit (429) on: {url}. Backing off.")
         except Exception:
             pass
         return None
 
     async def save_to_jsonl(self, data):
-        """Thread-safe writing of scraped page data."""
+        """Thread-safe JSONL writer."""
         async with self.write_lock:
             with open(self.output_file, "a", encoding="utf-8") as f:
                 f.write(json.dumps(data, ensure_ascii=False) + "\n")
 
-    async def domain_worker(self, session, domain):
-        """Worker dedicated to a single domain, crawling as fast as possible."""
-        queue = self.domain_queues[domain]
-        visited = self.domain_visited[domain]
-
+    async def worker(self, session):
+        """Worker that cycles through domains to fetch pages, ensuring no domain overload."""
         while self.pages_scraped < self.max_pages:
+            # Find a domain queue that has items and is not currently active
+            target_domain = None
+            for domain, queue in self.domain_queues.items():
+                if not queue.empty() and domain not in self.active_domains:
+                    # Check delay/cooldown
+                    last_time = self.last_fetch_time.get(domain, 0)
+                    if time.time() - last_time >= self.delay_per_domain:
+                        target_domain = domain
+                        break
+            
+            if not target_domain:
+                # No domain is ready or has work. Wait briefly and try again.
+                await asyncio.sleep(0.1)
+                continue
+                
+            # Lock the domain to this worker
+            self.active_domains.add(target_domain)
+            queue = self.domain_queues[target_domain]
+            visited = self.domain_visited[target_domain]
+            
             try:
-                # Retrieve URL from this domain's queue
-                url = await asyncio.wait_for(queue.get(), timeout=2.0)
-            except asyncio.TimeoutError:
-                # If queue is empty for 2 seconds, wait a bit or exit if no new links are coming
-                await asyncio.sleep(1.0)
-                if queue.empty():
-                    break
+                url = queue.get_nowait()
+            except asyncio.QueueEmpty:
+                self.active_domains.remove(target_domain)
                 continue
 
             if url in visited:
                 queue.task_done()
+                self.active_domains.remove(target_domain)
                 continue
-
+                
             visited.add(url)
             
-            # Fetch the page immediately (no sleep delay!)
+            # Fetch
+            self.last_fetch_time[target_domain] = time.time()
             html = await self.fetch_page(session, url)
+            
             if html:
                 title, text = self.clean_text(html)
-                
-                # Only keep articles with substantial text content
                 if len(text) > 200:
                     self.pages_scraped += 1
                     data = {
@@ -151,59 +169,76 @@ class FinnyCrawler:
                     
                     if self.pages_scraped % 100 == 0:
                         logger.info(f"Progress: {self.pages_scraped} pages scraped total.")
-
-                    # Extract new links for this domain
-                    links = self.extract_links(html, url, domain)
+                        
+                    # Extract and enqueue new links
+                    links = self.extract_links(html, url, target_domain)
                     for link in links:
                         if link not in visited:
                             queue.put_nowait(link)
-
+                            
             queue.task_done()
+            # Release domain
+            self.active_domains.remove(target_domain)
+            # Yield control
+            await asyncio.sleep(0.01)
 
     async def run(self):
-        """Launches parallel domain workers."""
-        logger.info(f"Starting crawler. Target: {self.max_pages} pages.")
+        logger.info(f"Starting crawler. Max Concurrency: {self.max_concurrency}. Delay per domain: {self.delay_per_domain}s")
         os.makedirs(os.path.dirname(os.path.abspath(self.output_file)), exist_ok=True)
         
         async with aiohttp.ClientSession() as session:
-            tasks = []
-            # For each domain, spawn several parallel workers to crawl it concurrently
-            for domain in self.domain_queues.keys():
-                for _ in range(self.concurrency_per_domain):
-                    tasks.append(asyncio.create_task(self.domain_worker(session, domain)))
-            
-            await asyncio.gather(*tasks)
+            workers = [asyncio.create_task(self.worker(session)) for _ in range(self.max_concurrency)]
+            await asyncio.gather(*workers)
             
         logger.info(f"Finished. Scraped {self.pages_scraped} pages to {self.output_file}.")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="FinnyCrawler Ultra - Aggressive Parallel Web Scraper")
+    parser = argparse.ArgumentParser(description="FinnyCrawler Pro - Safe & Ultra-Fast Multi-Domain Scraper")
     parser.add_argument("--limit", type=int, default=100000, help="Maximum pages to scrape")
-    parser.add_argument("--concurrency", type=int, default=10, help="Concurrency per domain")
+    parser.add_argument("--concurrency", type=int, default=40, help="Total parallel workers")
+    parser.add_argument("--delay", type=float, default=0.5, help="Delay between requests to the same domain")
     parser.add_argument("--output", type=str, default="data/training_data.jsonl", help="Output path")
     args = parser.parse_args()
 
-    # Seed list with a wide range of content-heavy target sites
+    # Highly diverse list of websites to distribute load and speed up crawls safely
     seeds = [
+        # Wikis
         "https://en.wikipedia.org/wiki/Main_Page",
         "https://de.wikipedia.org/wiki/Wikipedia:Hauptseite",
+        "https://fr.wikipedia.org/wiki/Portail:Accueil",
+        "https://es.wikipedia.org/wiki/Wikipedia:Portada",
+        # Tech & News
         "https://news.ycombinator.com/",
-        "https://www.gutenberg.org/",
         "https://www.bbc.com/news",
         "https://www.spiegel.de/",
         "https://www.heise.de/",
         "https://www.nytimes.com/",
         "https://www.cnn.com/",
         "https://www.reuters.com/",
-        "https://www.theguardian.com/international"
+        "https://www.theguardian.com/international",
+        "https://www.technologyreview.com/",
+        "https://www.wired.com/",
+        "https://www.bloomberg.com/",
+        # Science & Education
+        "https://www.nature.com/",
+        "https://www.scientificamerican.com/",
+        "https://www.nasa.gov/",
+        "https://www.britannica.com/",
+        "https://www.nationalgeographic.com/",
+        # Books & General
+        "https://www.gutenberg.org/",
+        "https://www.gutenberg.org/ebooks/search/?sort_order=downloads",
+        "https://archive.org/",
+        "https://www.gutenberg.org/ebooks/bookshelves"
     ]
 
     crawler = FinnyCrawler(
         seed_urls=seeds,
         output_file=args.output,
         max_pages=args.limit,
-        concurrency_per_domain=args.concurrency
+        max_concurrency=args.concurrency,
+        delay_per_domain=args.delay
     )
 
     asyncio.run(crawler.run())
