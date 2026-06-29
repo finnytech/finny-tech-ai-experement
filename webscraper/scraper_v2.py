@@ -9,6 +9,7 @@ import random
 import time
 import re
 import logging
+import concurrent.futures
 
 # Setup Logging
 logging.basicConfig(
@@ -32,122 +33,73 @@ QUESTION_PATTERN = re.compile(
     re.IGNORECASE
 )
 
-class FinnyKnowledgeCrawler:
-    def __init__(self, seed_urls, output_file, max_pages=100000, max_concurrency=40, delay_per_domain=0.5):
-        self.seed_urls = seed_urls
-        self.output_file = output_file
-        self.max_pages = max_pages
-        self.max_concurrency = max_concurrency
-        self.delay_per_domain = delay_per_domain
-        
-        self.visited = set()
-        self.pages_scraped = 0
-        
-        self.domain_queues = {}
-        self.domain_visited = {}
-        self.last_fetch_time = {}
-        self.active_domains = set()
-        
-        self.write_lock = asyncio.Lock()
-
-        # Initialize seeds
-        for url in self.seed_urls:
-            parsed = urlparse(url)
-            domain = parsed.netloc
-            if domain:
-                if domain not in self.domain_queues:
-                    self.domain_queues[domain] = asyncio.Queue()
-                    self.domain_visited[domain] = set()
-                self.domain_queues[domain].put_nowait(url)
-
-    def extract_wikipedia_definition(self, soup, url):
-        """Extracts concept definition from Wikipedia articles."""
+def process_html_in_worker(html_content, url, target_domain):
+    """
+    Runs in a separate process worker to offload CPU-bound HTML parsing 
+    and BeautifulSoup extraction from the async event loop.
+    """
+    soup = BeautifulSoup(html_content, "html.parser")
+    extracted_units = []
+    
+    # 1. Parse content based on domain type
+    if "wikipedia.org" in target_domain:
+        # Wikipedia parser
         title_el = soup.find("h1", id="firstHeading")
-        if not title_el:
-            return None
-        concept = title_el.get_text().strip()
-        
-        if ":" in concept and not concept.startswith("Category:"):
-            return None
-
-        body = soup.find("div", id="mw-content-text")
-        if not body:
-            return None
-            
-        paragraphs = []
-        for child in body.find_all("p", recursive=True):
-            p_text = child.get_text().strip()
-            if len(p_text) > 50:
-                paragraphs.append(p_text)
-            if len(paragraphs) >= 3:
-                break
-                
-        if not paragraphs:
-            return None
-            
-        definition = "\n".join(paragraphs)
-        definition = re.sub(r'\[\d+\]', '', definition)  # Remove citations
-        
-        return {
-            "type": "definition",
-            "concept": concept,
-            "text": definition,
-            "url": url,
-            "timestamp": int(time.time())
-        }
-
-    def extract_stackexchange_qa(self, soup, url):
-        """Extracts structured questions and answers from Q&A platforms."""
-        title_el = soup.find("a", class_="question-hyperlink")
-        if not title_el:
-            title_el = soup.find("h1")
-        if not title_el:
-            return None
-        question = title_el.get_text().strip()
-
-        answer_div = soup.find("div", class_="accepted-answer")
-        if not answer_div:
-            answer_div = soup.find("div", class_="answer")
-            
-        if not answer_div:
-            return None
-            
-        answer_body = answer_div.find("div", class_="js-post-body")
-        if not answer_body:
-            return None
-            
-        answer_text = answer_body.get_text(separator=" ").strip()
-        lines = (line.strip() for line in answer_text.splitlines())
-        chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
-        answer_clean = "\n".join(chunk for chunk in chunks if chunk)
-
-        if len(answer_clean) < 100:
-            return None
-
-        return {
-            "type": "qa",
-            "question": question,
-            "text": answer_clean,
-            "url": url,
-            "timestamp": int(time.time())
-        }
-
-    def extract_general_knowledge(self, soup, url):
-        """Extracts Q&A and definitions dynamically from ANY general web page."""
+        if title_el:
+            concept = title_el.get_text().strip()
+            if not (":" in concept and not concept.startswith("Category:")):
+                body = soup.find("div", id="mw-content-text")
+                if body:
+                    paragraphs = []
+                    for child in body.find_all("p", recursive=True):
+                        p_text = child.get_text().strip()
+                        if len(p_text) > 50:
+                            paragraphs.append(p_text)
+                        if len(paragraphs) >= 3:
+                            break
+                    if paragraphs:
+                        definition = "\n".join(paragraphs)
+                        definition = re.sub(r'\[\d+\]', '', definition)  # Remove citations
+                        extracted_units.append({
+                            "type": "definition",
+                            "concept": concept,
+                            "text": definition,
+                            "url": url,
+                            "timestamp": int(time.time())
+                        })
+                        
+    elif "stackexchange.com" in target_domain or "stackoverflow.com" in target_domain:
+        # StackExchange parser
+        title_el = soup.find("a", class_="question-hyperlink") or soup.find("h1")
+        if title_el:
+            question = title_el.get_text().strip()
+            answer_div = soup.find("div", class_="accepted-answer") or soup.find("div", class_="answer")
+            if answer_div:
+                answer_body = answer_div.find("div", class_="js-post-body")
+                if answer_body:
+                    answer_text = answer_body.get_text(separator=" ").strip()
+                    lines = (line.strip() for line in answer_text.splitlines())
+                    chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
+                    answer_clean = "\n".join(chunk for chunk in chunks if chunk)
+                    if len(answer_clean) > 100:
+                        extracted_units.append({
+                            "type": "qa",
+                            "question": question,
+                            "text": answer_clean,
+                            "url": url,
+                            "timestamp": int(time.time())
+                        })
+    else:
+        # General Web Page Parser (Q&A and Definitions Heuristics)
         title_el = soup.find("title")
         page_title = title_el.get_text().strip() if title_el else ""
         
-        extracted_units = []
-
-        # 1. Look for Question-Answer structures (headings followed by text)
+        # Look for headings followed by paragraphs (Q&A structure)
         headings = soup.find_all(["h1", "h2", "h3"])
         for h in headings:
             heading_text = h.get_text().strip()
-            
-            # Check if heading is a question (ends with '?' or contains question words)
             is_question = heading_text.endswith("?") or QUESTION_PATTERN.search(heading_text)
-            if is_question and len(heading_text) > 10 and len(heading_text) < 150:
-                # Find paragraphs immediately following this heading
+            if is_question and 10 < len(heading_text) < 150:
                 paragraphs = []
                 sibling = h.find_next_sibling()
                 while sibling and sibling.name not in ["h1", "h2", "h3"]:
@@ -158,22 +110,18 @@ class FinnyKnowledgeCrawler:
                     sibling = sibling.find_next_sibling()
                     if len(paragraphs) >= 3:
                         break
-                
                 if paragraphs:
-                    answer_text = "\n".join(paragraphs)
                     extracted_units.append({
                         "type": "qa",
                         "question": heading_text,
-                        "text": answer_text,
+                        "text": "\n".join(paragraphs),
                         "url": url,
                         "timestamp": int(time.time())
                     })
-
-        # 2. If no Q&A headings found, fall back to extracting the lead text as a concept definition
+                    
+        # Fallback to general concept definition using page title
         if not extracted_units and len(page_title) > 5:
-            # Clean page title (e.g. remove " - Wikipedia", " | Spiegel" etc.)
             clean_title = re.split(r'\s+[-|•]\s+', page_title)[0].strip()
-            
             paragraphs = []
             for p in soup.find_all("p"):
                 p_text = p.get_text().strip()
@@ -181,33 +129,63 @@ class FinnyKnowledgeCrawler:
                     paragraphs.append(p_text)
                 if len(paragraphs) >= 2:
                     break
-            
             if paragraphs:
-                definition_text = "\n".join(paragraphs)
                 extracted_units.append({
                     "type": "definition",
                     "concept": clean_title,
-                    "text": definition_text,
+                    "text": "\n".join(paragraphs),
                     "url": url,
                     "timestamp": int(time.time())
                 })
 
-        return extracted_units
+    # 2. Extract links
+    links = []
+    for anchor in soup.find_all("a", href=True):
+        href = anchor['href']
+        full_url = urljoin(url, href)
+        parsed = urlparse(full_url)
+        if parsed.scheme in ("http", "https") and parsed.netloc == target_domain:
+            # Exclude administrative pages on wikipedia
+            if "wikipedia.org" in target_domain:
+                if any(x in parsed.path for x in ["/wiki/Special:", "/wiki/Help:", "/wiki/Wikipedia:", "/wiki/Talk:", "/wiki/File:"]):
+                    continue
+            clean_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+            links.append(clean_url)
 
-    def extract_links(self, html_content, base_url, target_domain):
-        """Extracts internal and external links to explore the web randomly."""
-        soup = BeautifulSoup(html_content, "html.parser")
-        links = []
-        for anchor in soup.find_all("a", href=True):
-            href = anchor['href']
-            full_url = urljoin(base_url, href)
-            parsed = urlparse(full_url)
-            
-            if parsed.scheme in ("http", "https"):
-                # Clean URL (discard anchors/queries to avoid loops)
-                clean_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
-                links.append(clean_url)
-        return links
+    return links, extracted_units
+
+
+class FinnyKnowledgeCrawler:
+    def __init__(self, seed_urls, output_file, max_pages=100000, max_concurrency=40, delay_per_domain=0.5, num_cores=8):
+        self.seed_urls = seed_urls
+        self.output_file = output_file
+        self.max_pages = max_pages
+        self.max_concurrency = max_concurrency
+        self.delay_per_domain = delay_per_domain
+        self.num_cores = num_cores
+        
+        self.visited = set()
+        self.pages_scraped = 0
+        
+        self.domain_queues = {}
+        self.domain_visited = {}
+        self.last_fetch_time = {}
+        self.active_domains = set()
+        
+        self.write_lock = asyncio.Lock()
+        
+        # Initialize the ProcessPoolExecutor to run CPU-bound parsing on all available CPU cores
+        self.executor = concurrent.futures.ProcessPoolExecutor(max_workers=self.num_cores)
+
+        # Initialize seeds
+        for url in self.seed_urls:
+            parsed = urlparse(url)
+            domain = parsed.netloc
+            if domain:
+                if domain not in self.domain_queues:
+                    self.domain_queues[domain] = asyncio.Queue()
+                    self.domain_visited[domain] = set()
+                self.domain_queues[domain].put_nowait(url)
 
     async def fetch_page(self, session, url):
         headers = {
@@ -228,6 +206,8 @@ class FinnyKnowledgeCrawler:
                 f.write(json.dumps(data, ensure_ascii=False) + "\n")
 
     async def worker(self, session):
+        loop = asyncio.get_running_loop()
+        
         while self.pages_scraped < self.max_pages:
             target_domain = None
             for domain, queue in self.domain_queues.items():
@@ -262,51 +242,41 @@ class FinnyKnowledgeCrawler:
             html = await self.fetch_page(session, url)
             
             if html:
-                soup = BeautifulSoup(html, "html.parser")
-                
-                # Check page type and extract knowledge structure accordingly
-                extracted_data_list = []
-                if "wikipedia.org" in target_domain:
-                    wiki_def = self.extract_wikipedia_definition(soup, url)
-                    if wiki_def:
-                        extracted_data_list.append(wiki_def)
-                elif "stackexchange.com" in target_domain or "stackoverflow.com" in target_domain:
-                    se_qa = self.extract_stackexchange_qa(soup, url)
-                    if se_qa:
-                        extracted_data_list.append(se_qa)
-                else:
-                    # General web page parser (looks for Q&A structures and concept definitions)
-                    extracted_data_list = self.extract_general_knowledge(soup, url)
-                
-                # Save extracted units
-                for data in extracted_data_list:
-                    self.pages_scraped += 1
-                    await self.save_to_jsonl(data)
+                try:
+                    # Offload the BeautifulSoup parsing and link extraction to the process pool!
+                    # This runs concurrently on your 8 CPU cores.
+                    links, extracted_data_list = await loop.run_in_executor(
+                        self.executor, process_html_in_worker, html, url, target_domain
+                    )
                     
-                    if self.pages_scraped % 100 == 0:
-                        logger.info(f"Progress: {self.pages_scraped} general knowledge units scraped.")
-
-                # Extract and enqueue links (internal to stay on site, external to expand seeds)
-                links = self.extract_links(html, url, target_domain)
-                for link in links:
-                    parsed_link = urlparse(link)
-                    domain = parsed_link.netloc
-                    
-                    if domain:
-                        # Dynamically add new domains to crawl to keep things random and general!
-                        if domain not in self.domain_queues:
-                            self.domain_queues[domain] = asyncio.Queue()
-                            self.domain_visited[domain] = set()
+                    # Save extracted units
+                    for data in extracted_data_list:
+                        self.pages_scraped += 1
+                        await self.save_to_jsonl(data)
                         
-                        if link not in self.domain_visited[domain]:
-                            self.domain_queues[domain].put_nowait(link)
+                        if self.pages_scraped % 100 == 0:
+                            logger.info(f"Progress: {self.pages_scraped} knowledge units scraped.")
+
+                    # Enqueue new links
+                    for link in links:
+                        parsed_link = urlparse(link)
+                        domain = parsed_link.netloc
+                        if domain:
+                            if domain not in self.domain_queues:
+                                self.domain_queues[domain] = asyncio.Queue()
+                                self.domain_visited[domain] = set()
+                            
+                            if link not in self.domain_visited[domain]:
+                                self.domain_queues[domain].put_nowait(link)
+                except Exception as e:
+                    logger.warning(f"Error parsing page {url}: {e}")
                             
             queue.task_done()
             self.active_domains.remove(target_domain)
             await asyncio.sleep(0.01)
 
     async def run(self):
-        logger.info(f"Starting General Knowledge FinnyCrawlerV2. Target: {self.max_pages} units.")
+        logger.info(f"Starting Multi-Core FinnyCrawlerV2. Cores: {self.num_cores}. Target: {self.max_pages} units.")
         os.makedirs(os.path.dirname(os.path.abspath(self.output_file)), exist_ok=True)
         
         async with aiohttp.ClientSession() as session:
@@ -314,20 +284,22 @@ class FinnyKnowledgeCrawler:
             await asyncio.gather(*workers)
             
         logger.info(f"Finished. Scraped {self.pages_scraped} knowledge units to {self.output_file}.")
+        self.executor.shutdown()
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="FinnyCrawler V2 - General Knowledge & Reasoning Extractor")
+    parser = argparse.ArgumentParser(description="FinnyCrawler V2 - Multi-Core General Knowledge Extractor")
     parser.add_argument("--limit", type=int, default=100000, help="Maximum units to scrape")
     parser.add_argument("--concurrency", type=int, default=40, help="Total parallel workers")
     parser.add_argument("--delay", type=float, default=0.5, help="Delay per domain")
+    parser.add_argument("--cores", type=int, default=8, help="Number of CPU cores to utilize")
     parser.add_argument("--output", type=str, default="data/knowledge_data.jsonl", help="Output path")
     args = parser.parse_args()
 
     # Highly diverse seeds to start crawling the general web randomly
     seeds = [
-        "https://en.wikipedia.org/wiki/Special:Random",  # Start randomly on English Wikipedia
-        "https://de.wikipedia.org/wiki/Spezial:Zuf%C3%A4llige_Seite",  # Start randomly on German Wikipedia
+        "https://en.wikipedia.org/wiki/Special:Random",
+        "https://de.wikipedia.org/wiki/Spezial:Zuf%C3%A4llige_Seite",
         "https://news.ycombinator.com/",
         "https://www.bbc.com/news",
         "https://www.spiegel.de/",
@@ -343,7 +315,8 @@ if __name__ == "__main__":
         output_file=args.output,
         max_pages=args.limit,
         max_concurrency=args.concurrency,
-        delay_per_domain=args.delay
+        delay_per_domain=args.delay,
+        num_cores=args.cores
     )
 
     asyncio.run(crawler.run())
