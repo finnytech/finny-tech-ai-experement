@@ -10,6 +10,7 @@ import time
 import re
 import logging
 import concurrent.futures
+import subprocess
 
 # Setup Logging
 logging.basicConfig(
@@ -156,13 +157,15 @@ def process_html_in_worker(html_content, url, target_domain):
 
 
 class FinnyKnowledgeCrawler:
-    def __init__(self, seed_urls, output_file, max_pages=100000, max_concurrency=40, delay_per_domain=0.5, num_cores=8):
+    def __init__(self, seed_urls, output_dir, bucket_name=None, max_pages=100000, max_concurrency=40, delay_per_domain=0.5, num_cores=8, upload_interval_sec=300):
         self.seed_urls = seed_urls
-        self.output_file = output_file
+        self.output_dir = output_dir
+        self.bucket_name = bucket_name
         self.max_pages = max_pages
         self.max_concurrency = max_concurrency
         self.delay_per_domain = delay_per_domain
         self.num_cores = num_cores
+        self.upload_interval_sec = upload_interval_sec
         
         self.visited = set()
         self.pages_scraped = 0
@@ -173,6 +176,9 @@ class FinnyKnowledgeCrawler:
         self.active_domains = set()
         
         self.write_lock = asyncio.Lock()
+        
+        # Initialize current output file name with timestamp
+        self.current_output_file = os.path.join(self.output_dir, f"knowledge_data_{int(time.time())}.jsonl")
         
         # Initialize the ProcessPoolExecutor to run CPU-bound parsing on all available CPU cores
         self.executor = concurrent.futures.ProcessPoolExecutor(max_workers=self.num_cores)
@@ -202,8 +208,46 @@ class FinnyKnowledgeCrawler:
 
     async def save_to_jsonl(self, data):
         async with self.write_lock:
-            with open(self.output_file, "a", encoding="utf-8") as f:
+            with open(self.current_output_file, "a", encoding="utf-8") as f:
                 f.write(json.dumps(data, ensure_ascii=False) + "\n")
+
+    async def rotate_file(self):
+        """
+        Closes current local file, starts a new one, uploads the old one 
+        to Google Cloud Storage bucket asynchronously, and deletes it locally.
+        """
+        async with self.write_lock:
+            old_file = self.current_output_file
+            self.current_output_file = os.path.join(self.output_dir, f"knowledge_data_{int(time.time())}.jsonl")
+            
+        if os.path.exists(old_file) and os.path.getsize(old_file) > 0:
+            logger.info(f"Rotating file: Uploading local SSD file {old_file} to gs://{self.bucket_name}/ ...")
+            try:
+                # Use gsutil to upload the file asynchronously without blocking the event loop
+                cmd = ["gsutil", "cp", old_file, f"gs://{self.bucket_name}/"]
+                proc = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE
+                )
+                stdout, stderr = await proc.communicate()
+                if proc.returncode == 0:
+                    logger.info(f"SUCCESS: Uploaded {old_file} to GCS. Deleting local file.")
+                    os.remove(old_file)
+                else:
+                    logger.error(f"FAILED to upload {old_file} to GCS. Stderr: {stderr.decode()}")
+            except Exception as e:
+                logger.error(f"Error uploading file {old_file} to GCS: {e}")
+
+    async def uploader_loop(self):
+        """
+        Runs in the background, triggering file rotation and GCS upload 
+        every N seconds (e.g. 5 minutes).
+        """
+        while self.pages_scraped < self.max_pages:
+            await asyncio.sleep(self.upload_interval_sec)
+            logger.info(f"Interval reached ({self.upload_interval_sec}s). Rotating file for upload.")
+            await self.rotate_file()
 
     async def worker(self, session):
         loop = asyncio.get_running_loop()
@@ -277,14 +321,29 @@ class FinnyKnowledgeCrawler:
 
     async def run(self):
         logger.info(f"Starting Multi-Core FinnyCrawlerV2. Cores: {self.num_cores}. Target: {self.max_pages} units.")
-        os.makedirs(os.path.dirname(os.path.abspath(self.output_file)), exist_ok=True)
+        os.makedirs(self.output_dir, exist_ok=True)
         
-        async with aiohttp.ClientSession() as session:
-            workers = [asyncio.create_task(self.worker(session)) for _ in range(self.max_concurrency)]
-            await asyncio.gather(*workers)
+        # Start uploader task in the background if bucket is configured
+        uploader_task = None
+        if self.bucket_name:
+            logger.info(f"Auto-upload active. Uploading to gs://{self.bucket_name}/ every {self.upload_interval_sec} seconds.")
+            uploader_task = asyncio.create_task(self.uploader_loop())
+        
+        try:
+            async with aiohttp.ClientSession() as session:
+                workers = [asyncio.create_task(self.worker(session)) for _ in range(self.max_concurrency)]
+                await asyncio.gather(*workers)
+        finally:
+            if uploader_task:
+                uploader_task.cancel()
             
-        logger.info(f"Finished. Scraped {self.pages_scraped} knowledge units to {self.output_file}.")
-        self.executor.shutdown()
+            # Final rotation & upload to ensure last data is uploaded
+            if self.bucket_name:
+                logger.info("Crawl finished. Performing final file rotation and GCS upload.")
+                await self.rotate_file()
+                
+            logger.info(f"Finished. Scraped {self.pages_scraped} knowledge units.")
+            self.executor.shutdown()
 
 
 if __name__ == "__main__":
@@ -293,7 +352,9 @@ if __name__ == "__main__":
     parser.add_argument("--concurrency", type=int, default=40, help="Total parallel workers")
     parser.add_argument("--delay", type=float, default=0.5, help="Delay per domain")
     parser.add_argument("--cores", type=int, default=8, help="Number of CPU cores to utilize")
-    parser.add_argument("--output", type=str, default="data/knowledge_data.jsonl", help="Output path")
+    parser.add_argument("--output_dir", type=str, default="data", help="Output directory on local SSD")
+    parser.add_argument("--bucket", type=str, default=None, help="Google Cloud Storage bucket name for auto upload")
+    parser.add_argument("--interval", type=int, default=300, help="Interval in seconds for GCS auto-upload (default 5 minutes)")
     args = parser.parse_args()
 
     # Highly diverse seeds to start crawling the general web randomly
@@ -312,11 +373,13 @@ if __name__ == "__main__":
 
     crawler = FinnyKnowledgeCrawler(
         seed_urls=seeds,
-        output_file=args.output,
+        output_dir=args.output_dir,
+        bucket_name=args.bucket,
         max_pages=args.limit,
         max_concurrency=args.concurrency,
         delay_per_domain=args.delay,
-        num_cores=args.cores
+        num_cores=args.cores,
+        upload_interval_sec=args.interval
     )
 
     asyncio.run(crawler.run())
