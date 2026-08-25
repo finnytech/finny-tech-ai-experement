@@ -1,8 +1,15 @@
+import os
+import sys
+
+# Garantiert, dass alle Module (model, ppo_jax, wr_tracker etc.) gefunden werden, egal von wo train.py aufgerufen wird
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+if SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, SCRIPT_DIR)
+
 import time
 import jax
 import jax.numpy as jnp
 import numpy as np
-import os
 
 from model import MicroMachinesTransformerRL
 from ppo_jax import PPOAgent
@@ -17,7 +24,7 @@ def make_mock_or_retro_env():
         print("[Env] Found retro/stable-retro! Loading Micro Machines 2 Genesis...")
         return retro.make(game="MicroMachines2-Genesis", state="BreakfastBends.TimeAttack")
     except Exception as e:
-        print(f"[Env] Note: running in simulation mode ({e}). For real MD execution install stable-retro.")
+        print(f"[Env] Note: Running in high-speed simulation mode ({e}). For real MD ROM execution, import stable-retro.")
         
         class MockRetroEnv:
             def __init__(self):
@@ -35,7 +42,6 @@ def make_mock_or_retro_env():
 
             def step(self, buttons):
                 self.step_idx += 1
-                # If accel button pressed
                 if buttons[0] == 1 or buttons[1] == 1:
                     self.speed = min(120.0, self.speed + 1.2)
                 else:
@@ -75,8 +81,8 @@ def main():
     tracker = WorldRecordTracker(
         track_name="Breakfast Bends",
         target_wr_ms=TARGET_WR_MS,
-        log_file="wr_tracker_log.json",
-        best_run_file="best_world_record.json"
+        log_file=os.path.join(SCRIPT_DIR, "wr_tracker_log.json"),
+        best_run_file=os.path.join(SCRIPT_DIR, "best_world_record.json")
     )
 
     # 2. Setup Live Streamer & Server
@@ -179,7 +185,7 @@ def main():
                 rewards=jnp.array(buf_rewards),
                 values=jnp.array(buf_values),
                 dones=jnp.array(buf_dones),
-                last_value=last_val_arr[0],
+                last_value=float(last_val_arr[0]),
                 gamma=agent.gamma,
                 lam=agent.gae_lambda
             )

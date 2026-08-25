@@ -4,23 +4,25 @@ Reinforcement Learning Agent mit **Causal Transformer**, **RAM-State Telemetrie*
 
 ---
 
-## ⚡ Schnellstart in Google Colab (TPU v5e-1)
+## ⚡ Schnellstart in Google Colab (All-in-One Zelle)
 
-Führe diese Zellen in Google Colab aus:
+Kopiere diesen gesamten Block in eine einzige Zelle in Google Colab:
 
 ```python
-# 1. Repository klonen & ins Verzeichnis wechseln
-!git clone https://github.com/finnytech/finny-tech-ai-experement.git
-%cd finny-tech-ai-experement/micro-machines-rl-wr
+# 1. Repository herunterladen & nach /content kopieren
+!rm -rf /content/finny-tech-ai-experement
+!git clone https://github.com/finnytech/finny-tech-ai-experement.git /content/finny-tech-ai-experement
+!cp -rf /content/finny-tech-ai-experement/micro-machines-rl-wr/* /content/
+%cd /content
 
 # 2. Systempakete & RL-Abhängigkeiten installieren
 !apt-get update -qq && apt-get install -y -qq cmake libgl1-mesa-glx libglib2.0-0 zlib1g-dev
 !pip install -q flax optax opencv-python stable-retro
-!wget -q -nc https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -O cloudflared
-!chmod +x cloudflared
+!wget -q -nc https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -O /content/cloudflared
+!chmod +x /content/cloudflared
 
 # 3. Training & Live-Stream starten
-!python3 train.py
+!python3 /content/train.py
 ```
 
 ---
