@@ -1,19 +1,13 @@
 import os
 import sys
+import glob
 import hashlib
 import json
 import urllib.request
 import zipfile
 import shutil
+import subprocess
 
-# Direct Mirror Links for Micro Machines 2 - Turbo Tournament (Europe) Sega Mega Drive ROM
-ROM_URLS = [
-    "https://archive.org/download/sega-mega-drive-genesis-romset-ultra-complete/Micro%20Machines%202%20-%20Turbo%20Tournament%20%28Europe%29%20%28J-Cart%29.zip",
-    "https://raw.githubusercontent.com/grantjenks/free-python-games/master/freegames/utils/roms/MicroMachines2.zip",
-    "https://archive.org/download/nointro.md/Micro%20Machines%202%20-%20Turbo%20Tournament%20%28Europe%29%20%28J-Cart%29.7z"
-]
-
-# Standard metadata for Genesis Integration in stable-retro
 METADATA_JSON = {
     "default_state": None
 }
@@ -70,17 +64,55 @@ def get_retro_custom_dir():
         os.makedirs(stable_dir, exist_ok=True)
         return stable_dir
     except Exception:
-        # Fallback to local integration folder
         local_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "custom_integrations", "MicroMachines2-Genesis")
         os.makedirs(local_dir, exist_ok=True)
         return local_dir
 
+def scan_for_user_uploaded_rom():
+    """Scans /content, current dir, and subdirs for user-provided Micro Machines 2 ROMs."""
+    search_paths = ["/content", ".", os.path.dirname(os.path.abspath(__file__))]
+    extensions = ["*.md", "*.bin", "*.gen", "*.smd", "*.zip", "*.7z"]
+    
+    for base in search_paths:
+        if not os.path.exists(base):
+            continue
+        for ext in extensions:
+            matches = glob.glob(os.path.join(base, "**", ext), recursive=True)
+            for m in matches:
+                name_lower = os.path.basename(m).lower()
+                if "micro" in name_lower or "machine" in name_lower or ext in ["*.md", "*.bin", "*.gen"]:
+                    if os.path.getsize(m) > 100000:
+                        return m
+    return None
+
+def install_rom_file(source_path, target_dir):
+    """Installs and verifies a ROM file into the integration folder."""
+    rom_dest = os.path.join(target_dir, "rom.md")
+    sha_dest = os.path.join(target_dir, "rom.sha")
+    
+    if source_path.lower().endswith(".zip"):
+        with zipfile.ZipFile(source_path, 'r') as zip_ref:
+            for member in zip_ref.namelist():
+                if member.lower().endswith(('.md', '.bin', '.gen', '.smd')):
+                    with zip_ref.open(member) as src, open(rom_dest, "wb") as dst:
+                        shutil.copyfileobj(src, dst)
+                    break
+    else:
+        shutil.copyfile(source_path, rom_dest)
+
+    if os.path.exists(rom_dest) and os.path.getsize(rom_dest) > 100000:
+        with open(rom_dest, "rb") as f:
+            rom_hash = hashlib.sha1(f.read()).hexdigest()
+        with open(sha_dest, "w") as f:
+            f.write(rom_hash + "\n")
+        print(f"[ROM-Setup] ✅ ECHTES SEGA ROM ERFOLGREICH INSTALLIERT ({os.path.getsize(rom_dest)} Bytes)!")
+        return True
+    return False
+
 def ensure_real_rom():
     """
-    Downloads and installs the genuine 16-bit Sega Mega Drive Micro Machines 2 ROM
-    directly into stable-retro so real gameplay renders at 60 FPS.
+    Ensures that the real Sega Genesis Micro Machines 2 ROM is present.
     """
-    print("[ROM-Setup] 🏎️ Richte echtes Sega Mega Drive Micro Machines 2 Game ein...")
     target_dir = get_retro_custom_dir()
     rom_dest = os.path.join(target_dir, "rom.md")
     sha_dest = os.path.join(target_dir, "rom.sha")
@@ -88,7 +120,7 @@ def ensure_real_rom():
     meta_dest = os.path.join(target_dir, "metadata.json")
     scen_dest = os.path.join(target_dir, "scenario.json")
 
-    # 1. Write metadata JSON files
+    # 1. Write Integration JSONs
     with open(data_dest, "w") as f:
         json.dump(DATA_JSON, f, indent=2)
     with open(meta_dest, "w") as f:
@@ -96,67 +128,47 @@ def ensure_real_rom():
     with open(scen_dest, "w") as f:
         json.dump(SCENARIO_JSON, f, indent=2)
 
-    # 2. Check if rom.md already exists
+    # 2. Check if already installed
     if os.path.exists(rom_dest) and os.path.getsize(rom_dest) > 100000:
-        print(f"[ROM-Setup] ✅ Echtes ROM bereits vorhanden ({os.path.getsize(rom_dest)} Bytes): {rom_dest}")
-        # Create sha
         with open(rom_dest, "rb") as f:
             rom_hash = hashlib.sha1(f.read()).hexdigest()
         with open(sha_dest, "w") as f:
             f.write(rom_hash + "\n")
         return True
 
-    # 3. Download the ROM from reliable mirrors
-    temp_download = "/tmp/mm2_download.zip" if sys.platform != "win32" else os.path.join(target_dir, "mm2_temp.zip")
-    downloaded = False
+    # 3. Check for uploaded ROM in /content or project dir
+    found_rom = scan_for_user_uploaded_rom()
+    if found_rom and found_rom != rom_dest:
+        print(f"[ROM-Setup] 📦 Gefundenes ROM wird importiert: {found_rom}")
+        if install_rom_file(found_rom, target_dir):
+            return True
 
-    for url in ROM_URLS:
+    # 4. Try multi-source curl download with realistic browser spoofing
+    download_urls = [
+        "https://archive.org/download/sega-mega-drive-genesis-romset-ultra-complete/Micro%20Machines%202%20-%20Turbo%20Tournament%20%28Europe%29%20%28J-Cart%29.zip",
+        "https://archive.org/download/No-Intro-Collection_2016-01-03_Fixed/Sega%20-%20Mega%20Drive%20-%20Genesis.zip/Micro%20Machines%202%20-%20Turbo%20Tournament%20%28Europe%29%20%28J-Cart%29.zip"
+    ]
+    
+    temp_zip = "/content/mm2_rom.zip" if sys.platform != "win32" else os.path.join(target_dir, "mm2_rom.zip")
+    for url in download_urls:
         try:
-            print(f"[ROM-Setup] Lade echtes Mega Drive ROM von: {url}...")
-            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'})
-            with urllib.request.urlopen(req, timeout=15) as resp, open(temp_download, "wb") as out_file:
-                shutil.copyfileobj(resp, out_file)
-            
-            # Check if it's a zip file
-            if zipfile.is_zipfile(temp_download):
-                with zipfile.ZipFile(temp_download, 'r') as zip_ref:
-                    for member in zip_ref.namelist():
-                        if member.lower().endswith(('.md', '.bin', '.gen', '.smd')):
-                            with zip_ref.open(member) as source, open(rom_dest, "wb") as target:
-                                shutil.copyfileobj(source, target)
-                            downloaded = True
-                            break
-            elif os.path.getsize(temp_download) > 200000:
-                shutil.move(temp_download, rom_dest)
-                downloaded = True
-
-            if downloaded and os.path.exists(rom_dest) and os.path.getsize(rom_dest) > 100000:
-                print(f"[ROM-Setup] ✅ Echtes ROM erfolgreich entpackt ({os.path.getsize(rom_dest)} Bytes)!")
-                with open(rom_dest, "rb") as f:
-                    rom_hash = hashlib.sha1(f.read()).hexdigest()
-                with open(sha_dest, "w") as f:
-                    f.write(rom_hash + "\n")
-                break
-        except Exception as e:
-            print(f"[ROM-Setup] Spiegelserver fehlgeschlagen ({e}), probiere nächsten...")
-
-    # Clean up temp
-    if os.path.exists(temp_download):
-        try:
-            os.remove(temp_download)
+            print(f"[ROM-Setup] Versuche Download über curl: {url[:50]}...")
+            cmd = ["curl", "-sL", "-A", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36", url, "-o", temp_zip]
+            subprocess.run(cmd, timeout=30, check=False)
+            if os.path.exists(temp_zip) and os.path.getsize(temp_zip) > 100000:
+                if install_rom_file(temp_zip, target_dir):
+                    return True
         except Exception:
             pass
 
-    # 4. Also register custom integration path in stable-retro
-    try:
-        import retro.data
-        parent_custom = os.path.dirname(target_dir)
-        retro.data.Integrations.add_custom_path(parent_custom)
-        print(f"[ROM-Setup] ✅ Custom Integration registriert bei: {parent_custom}")
-    except Exception as e:
-        print(f"[ROM-Setup] Custom path notice: {e}")
-
-    return os.path.exists(rom_dest)
+    # 5. If still not found, print clear instructions
+    print("\n" + "=" * 70)
+    print("⚠️ BITTE ROM-DATEI BEREITSTELLEN:")
+    print("Ziehe einfach deine 'Micro Machines 2.md' (oder .bin / .zip) Datei")
+    print("per Drag & Drop links in die Google Colab Dateileiste (/content/).")
+    print("Das Skript erkennt sie automatisch und startet das echte Spiel!")
+    print("=" * 70 + "\n")
+    return False
 
 if __name__ == "__main__":
     ensure_real_rom()
