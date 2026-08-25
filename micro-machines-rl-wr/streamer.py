@@ -92,13 +92,13 @@ class StreamBroadcaster:
 
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self):
-                if self.path == "/stream.mjpg":
-                    self.send_response(200)
-                    self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
-                    self.send_header("Cache-Control", "no-cache, private")
-                    self.send_header("Pragma", "no-cache")
-                    self.end_headers()
-                    try:
+                try:
+                    if self.path == "/stream.mjpg":
+                        self.send_response(200)
+                        self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
+                        self.send_header("Cache-Control", "no-cache, private")
+                        self.send_header("Pragma", "no-cache")
+                        self.end_headers()
                         while broadcaster.running:
                             frame = broadcaster.get_frame()
                             if frame is not None:
@@ -109,13 +109,11 @@ class StreamBroadcaster:
                                 self.wfile.write(frame)
                                 self.wfile.write(b"\r\n")
                             time.sleep(0.033)
-                    except (ConnectionResetError, BrokenPipeError, socket.error):
-                        pass
-                else:
-                    self.send_response(200)
-                    self.send_header("Content-Type", "text/html; charset=utf-8")
-                    self.end_headers()
-                    html = """<!DOCTYPE html>
+                    else:
+                        self.send_response(200)
+                        self.send_header("Content-Type", "text/html; charset=utf-8")
+                        self.end_headers()
+                        html = """<!DOCTYPE html>
 <html>
 <head>
     <meta charset="utf-8">
@@ -140,7 +138,9 @@ class StreamBroadcaster:
     </div>
 </body>
 </html>"""
-                    self.wfile.write(html.encode("utf-8"))
+                        self.wfile.write(html.encode("utf-8"))
+                except (ConnectionResetError, BrokenPipeError, socket.error, Exception):
+                    pass
 
             def log_message(self, format, *args):
                 return
@@ -175,7 +175,6 @@ class StreamBroadcaster:
                 text=True
             )
             
-            # Read stderr lines until URL is found
             for _ in range(50):
                 if p.stderr is None:
                     break
@@ -188,7 +187,6 @@ class StreamBroadcaster:
                     print(f"👉 {self.public_url}")
                     print("=" * 65 + "\n")
 
-                    # If running inside Jupyter / Colab, display clickable HTML button
                     try:
                         from IPython.display import display, HTML
                         display(HTML(f'''

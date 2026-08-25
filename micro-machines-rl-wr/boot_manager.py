@@ -17,11 +17,12 @@ BTNS = {
 
 class AutoMenuBootManager:
     """
-    Automatischer Menu-Skipper für Micro Machines 2 Genesis:
-    1. Überspringt automatisch Intro-Screen & Hauptmenü.
-    2. Wählt den Modus ('Super League - Division 1' oder 'Time Trial').
-    3. Wählt den Fahrer ('Spider' / Formula 1).
-    4. Übergibt das Spiel exakt im Moment des Startsignals an das RL-Modell!
+    Präziser Menü-Navigator für Micro Machines 2 Sega Mega Drive:
+    1. Überspringt Intro & Titelbildschirm
+    2. Wählt im Hauptmenü '1 PLAYER'
+    3. Wählt 'SUPER LEAGUE' (Division 1) oder 'TIME TRIAL'
+    4. Wählt 'Spider' als Fahrer
+    5. Wartet die Ampel ('3, 2, 1, GO!') ab und übergibt die Kontrolle an das JAX-Transformer-Modell!
     """
 
     def __init__(self, mode: str = "SUPER_LEAGUE_HARD"):
@@ -30,43 +31,48 @@ class AutoMenuBootManager:
     @staticmethod
     def get_macro_sequence(mode: str = "SUPER_LEAGUE_HARD") -> List[Tuple[List[int], int]]:
         seq = []
-        # Intro Splash Screen skippen
-        seq.append((BTNS["NOOP"], 30))
-        seq.append((BTNS["START"], 6))
-        seq.append((BTNS["NOOP"], 25))
-        seq.append((BTNS["START"], 6))
+        # 1. Intro & Codemasters Splash Screen skippen
+        seq.append((BTNS["NOOP"], 45))
+        seq.append((BTNS["START"], 10))
         seq.append((BTNS["NOOP"], 35))
+        seq.append((BTNS["START"], 10))
+        seq.append((BTNS["NOOP"], 45))
+
+        # 2. Hauptmenü: '1 PLAYER' auswählen (Cursor steht bereits auf 1 PLAYER)
+        seq.append((BTNS["START"], 10)) # Bestätige 1 PLAYER
+        seq.append((BTNS["NOOP"], 45))
 
         if mode == "SUPER_LEAGUE_HARD":
-            # Hauptmenü -> Super League
-            seq.append((BTNS["DOWN"], 6))
-            seq.append((BTNS["NOOP"], 10))
-            seq.append((BTNS["START"], 6))
-            seq.append((BTNS["NOOP"], 40))
+            # 3. 1-Player Untermenü: Runter auf 'SUPER LEAGUE' navigieren
+            seq.append((BTNS["DOWN"], 10))
+            seq.append((BTNS["NOOP"], 15))
+            seq.append((BTNS["START"], 10)) # Bestätige SUPER LEAGUE
+            seq.append((BTNS["NOOP"], 50))
 
-            # Division 1 wählen
-            seq.append((BTNS["START"], 6))
-            seq.append((BTNS["NOOP"], 30))
+            # 4. Division 1 (Härtester Modus) auswählen
+            seq.append((BTNS["START"], 10))
+            seq.append((BTNS["NOOP"], 45))
 
-            # Spider wählen
-            seq.append((BTNS["RIGHT"], 6))
-            seq.append((BTNS["NOOP"], 10))
-            seq.append((BTNS["START"], 6))
-            seq.append((BTNS["NOOP"], 80))
+            # 5. Charakterauswahl: 'Spider' (Fahrer mit Top-Speed & Drift-Präzision)
+            seq.append((BTNS["RIGHT"], 10))
+            seq.append((BTNS["NOOP"], 15))
+            seq.append((BTNS["START"], 10)) # Bestätige Fahrer Spider
+            seq.append((BTNS["NOOP"], 90)) # Strecken-Ladebildschirm abwarten
 
         elif mode == "TIME_TRIAL_RECORD":
-            # Time Trial Mode
-            seq.append((BTNS["DOWN"], 6))
-            seq.append((BTNS["NOOP"], 8))
-            seq.append((BTNS["DOWN"], 6))
-            seq.append((BTNS["NOOP"], 8))
-            seq.append((BTNS["START"], 6))
-            seq.append((BTNS["NOOP"], 40))
-            seq.append((BTNS["START"], 6))
-            seq.append((BTNS["NOOP"], 70))
+            # 3. 1-Player Untermenü: Runter auf 'TIME TRIAL'
+            seq.append((BTNS["DOWN"], 10))
+            seq.append((BTNS["NOOP"], 12))
+            seq.append((BTNS["DOWN"], 10))
+            seq.append((BTNS["NOOP"], 12))
+            seq.append((BTNS["START"], 10)) # Bestätige TIME TRIAL
+            seq.append((BTNS["NOOP"], 50))
+            # Track 1 (Breakfast Bends) auswählen
+            seq.append((BTNS["START"], 10))
+            seq.append((BTNS["NOOP"], 90))
 
-        # Countdown abwarten
-        seq.append((BTNS["NOOP"], 40))
+        # 6. Ampel-Countdown auf der Rennstrecke ('3, 2, 1, GO!') abwarten
+        seq.append((BTNS["NOOP"], 140))
         return seq
 
     def execute_boot_sequence(self, env) -> Tuple[np.ndarray, Dict[str, Any]]:
@@ -74,7 +80,7 @@ class AutoMenuBootManager:
         last_obs = None
         last_info = {}
 
-        print(f"[BootManager] Überspringe Startmenü -> Starte Modus: {self.mode}...")
+        print(f"[BootManager] 🏎️ Navigiere durch Startmenü (1 PLAYER -> {self.mode} -> Spider)...")
         for buttons, frame_count in macro:
             for _ in range(frame_count):
                 step_res = env.step(buttons)
@@ -96,5 +102,5 @@ class AutoMenuBootManager:
                         last_obs = reset_res
                         last_info = {}
 
-        print("[BootManager] 🟢 START-AMPEL GRÜN! Steuerung übergeben!")
+        print("[BootManager] 🟢 START-AMPEL GRÜN! Steuerung auf der Rennstrecke an JAX/Flax übergeben!")
         return last_obs, last_info
