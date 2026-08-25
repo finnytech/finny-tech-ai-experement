@@ -3,14 +3,17 @@ import sys
 import numpy as np
 import time
 
-def auto_detect_menu_and_enter_race(env, streamer=None, tracker=None, max_frames=1500):
+def auto_detect_menu_and_enter_race(env, streamer=None, tracker=None, max_frames=1300):
     """
-    Hardware-präziser Menü-Bypass für Micro Machines 2 Genesis:
-    Sendet saubere 'Press & Release' Zyklen mit echtem NOOP-Zustand (Null-Spannung),
-    damit der Genesis 68000 Prozessor die Flanken-Interrupts (Tastendrücke) sauber erkennt!
+    Präziser Menü-Bypass für Micro Machines 2 Genesis:
+    1. 1 PLAYER betreten
+    2. Im 1-Player Menü 2x DOWN drücken auf 'SUPER LEAGUE' (CHALLENGE -> HEAD TO HEAD -> SUPER LEAGUE)
+    3. Division 1 (Härtester Modus) bestätigen
+    4. Fahrer 'Spider' auswählen
+    5. Startampel abwarten -> Übergabe an den JAX Transformer auf der TPU!
     """
     print("\n" + "=" * 65)
-    print("🏎️ [AutoPilot] Starte Hardware-präzisen 'Press & Release' Menü-Bypass...")
+    print("🏎️ [AutoPilot] Navigiere von 1-Player-Menü -> SUPER LEAGUE -> Spider...")
     print("=" * 65)
 
     btn_names = env.unwrapped.buttons if hasattr(env.unwrapped, "buttons") else [
@@ -65,54 +68,59 @@ def auto_detect_menu_and_enter_race(env, streamer=None, tracker=None, max_frames
     # -----------------------------------------------------------------
     # Schritt 1: Intros & Splash Screens überspringen
     # -----------------------------------------------------------------
-    print("[AutoPilot] ⏭️ Überspringe Sega & Codemasters Splash Screens...")
+    print("[AutoPilot] ⏭️ Überspringe Splash Screens...")
     send_step(BTN_NOOP, 60, "WAIT_INIT")
     for _ in range(8):
         press_and_release(BTN_START, press_frames=10, release_frames=15, label="SKIP_INTRO_START")
 
     # -----------------------------------------------------------------
-    # Schritt 2: Auf '1 PLAYER' stehen bleiben und mit B / START / C / A bestätigen
+    # Schritt 2: '1 PLAYER' betreten
     # -----------------------------------------------------------------
-    print("[AutoPilot] 🎮 Bestätige '1 PLAYER'...")
+    print("[AutoPilot] 🎮 Betrete '1 PLAYER'...")
     send_step(BTN_NOOP, 30, "WAIT_MENU")
-    for _ in range(3):
-        press_and_release(BTN_B, press_frames=15, release_frames=15, label="CONFIRM_1_PLAYER_B")
-        press_and_release(BTN_START, press_frames=15, release_frames=15, label="CONFIRM_1_PLAYER_START")
-        press_and_release(BTN_C, press_frames=15, release_frames=15, label="CONFIRM_1_PLAYER_C")
-        press_and_release(BTN_A, press_frames=15, release_frames=15, label="CONFIRM_1_PLAYER_A")
+    for _ in range(2):
+        press_and_release(BTN_B, press_frames=15, release_frames=15, label="ENTER_1_PLAYER_B")
+        press_and_release(BTN_C, press_frames=15, release_frames=15, label="ENTER_1_PLAYER_C")
 
     # -----------------------------------------------------------------
-    # Schritt 3: Im 1-Player-Menü 1x DOWN auf 'SUPER LEAGUE' navigieren & bestätigen
+    # Schritt 3: Im 1-Player Untermenü 2x DOWN drücken auf 'SUPER LEAGUE'
+    # (Reihenfolge: CHALLENGE -> HEAD TO HEAD -> SUPER LEAGUE)
     # -----------------------------------------------------------------
-    print("[AutoPilot] 🏆 Wähle 'SUPER LEAGUE' (Division 1)...")
-    send_step(BTN_NOOP, 30, "WAIT_SUBMENU")
-    press_and_release(BTN_DOWN, press_frames=12, release_frames=18, label="DOWN_TO_SUPER_LEAGUE")
+    print("[AutoPilot] 🏆 Navigiere zu 'SUPER LEAGUE' (2x DOWN)...")
+    send_step(BTN_NOOP, 40, "WAIT_SUBMENU")
+    press_and_release(BTN_DOWN, press_frames=12, release_frames=18, label="DOWN_1_HEAD_TO_HEAD")
+    press_and_release(BTN_DOWN, press_frames=12, release_frames=18, label="DOWN_2_SUPER_LEAGUE")
     
-    for _ in range(3):
+    # Bestätige SUPER LEAGUE
+    for _ in range(2):
         press_and_release(BTN_B, press_frames=15, release_frames=15, label="CONFIRM_SUPER_LEAGUE_B")
         press_and_release(BTN_C, press_frames=15, release_frames=15, label="CONFIRM_SUPER_LEAGUE_C")
-        press_and_release(BTN_START, press_frames=15, release_frames=15, label="CONFIRM_SUPER_LEAGUE_START")
 
     # -----------------------------------------------------------------
-    # Schritt 4: Division 1 bestätigen & Fahrer 'Spider' auswählen
+    # Schritt 4: Division 1 (Härtester Modus) bestätigen
     # -----------------------------------------------------------------
-    print("[AutoPilot] 🕷️ Wähle Fahrer 'Spider'...")
-    send_step(BTN_NOOP, 30, "WAIT_DIV")
-    press_and_release(BTN_B, press_frames=15, release_frames=15, label="CONFIRM_DIV1_B")
-    
-    send_step(BTN_NOOP, 30, "WAIT_CHAR")
+    print("[AutoPilot] 🥇 Bestätige Division 1...")
+    send_step(BTN_NOOP, 40, "WAIT_DIV")
+    for _ in range(2):
+        press_and_release(BTN_B, press_frames=15, release_frames=15, label="CONFIRM_DIV1_B")
+        press_and_release(BTN_C, press_frames=15, release_frames=15, label="CONFIRM_DIV1_C")
+
+    # -----------------------------------------------------------------
+    # Schritt 5: Fahrer 'Spider' (Formel 1, Top-Speed) auswählen
+    # -----------------------------------------------------------------
+    print("[AutoPilot] 🕷️ Wähle Fahrer 'Spider' (1x RIGHT)...")
+    send_step(BTN_NOOP, 40, "WAIT_CHAR")
     press_and_release(BTN_RIGHT, press_frames=12, release_frames=18, label="SELECT_SPIDER_RIGHT")
     
-    for _ in range(3):
+    for _ in range(2):
         press_and_release(BTN_B, press_frames=15, release_frames=15, label="CONFIRM_SPIDER_B")
         press_and_release(BTN_C, press_frames=15, release_frames=15, label="CONFIRM_SPIDER_C")
-        press_and_release(BTN_START, press_frames=15, release_frames=15, label="CONFIRM_SPIDER_START")
 
     # -----------------------------------------------------------------
-    # Schritt 5: Startampel & Rennstrecke
+    # Schritt 6: Strecken-Ladebildschirm & Startampel (3, 2, 1, GO!)
     # -----------------------------------------------------------------
     print("[AutoPilot] 🚦 Warte auf Rennstrecke & Startampel...")
-    last_obs, last_info = send_step(BTN_B, 220, "START_RACE_ACCEL")
+    last_obs, last_info = send_step(BTN_B, 240, "START_RACE_ACCEL")
 
     print("=" * 65)
     print("🟢 [AutoPilot] RENNSTRECKE ERREICHT! STEUERUNG AN TPU TRANSFORMER ÜBERGEBEN!")
