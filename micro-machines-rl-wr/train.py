@@ -3,20 +3,27 @@ import sys
 import gc
 import subprocess
 import time
+from unittest.mock import MagicMock
 
-# Auto-Setup Virtual X11 Display (Xvfb) für Headless Colab Server
-if "DISPLAY" not in os.environ or not os.environ.get("DISPLAY"):
-    os.environ["DISPLAY"] = ":1"
-    try:
-        subprocess.Popen(
-            ["Xvfb", ":1", "-screen", "0", "640x480x24", "-ac", "+extension", "GLX", "+render", "-noreset"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL
-        )
-        time.sleep(0.5)
-        print("[Display] 🖥️ Headless Virtual Display (Xvfb :1) erfolgreich gestartet!")
-    except Exception as e:
-        print(f"[Display] Xvfb notice: {e}")
+# 1. Headless Protection: Mock pyglet & rendering modules to prevent any OpenGL / X11 window initialization
+class DummyImageViewer:
+    def __init__(self, *args, **kwargs):
+        self.isopen = False
+    def imshow(self, arr):
+        pass
+    def render(self, *args, **kwargs):
+        pass
+    def close(self):
+        pass
+
+mock_render_module = MagicMock()
+mock_render_module.SimpleImageViewer = DummyImageViewer
+sys.modules["stable_retro.rendering"] = mock_render_module
+sys.modules["retro.rendering"] = mock_render_module
+sys.modules["pyglet"] = MagicMock()
+sys.modules["pyglet.gl"] = MagicMock()
+sys.modules["pyglet.window"] = MagicMock()
+sys.modules["pyglet.canvas"] = MagicMock()
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 if SCRIPT_DIR not in sys.path:
