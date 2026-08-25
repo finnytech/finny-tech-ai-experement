@@ -9,7 +9,7 @@ BTNS = {
     "B":           [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
     "A":           [0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
     "C":           [0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0],
-    "CONFIRM":     [1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0], # B + START gleichzeitig (garantiert Menü-Bestätigung!)
+    "CONFIRM":     [1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0], # B + START
     "UP":          [0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0],
     "DOWN":        [0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0],
     "LEFT":        [0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0],
@@ -39,10 +39,10 @@ class AutoMenuBootManager:
         seq.append((BTNS["CONFIRM"], 15))
         seq.append((BTNS["NOOP"], 60))
 
-        # 2. Im Hauptmenü '1 PLAYER' bestätigen (Cursor steht auf 1 PLAYER)
+        # 2. Im Hauptmenü '1 PLAYER' bestätigen
         seq.append((BTNS["CONFIRM"], 20))
         seq.append((BTNS["NOOP"], 60))
-        seq.append((BTNS["B"], 20)) # Nochmal B zur Sicherheit
+        seq.append((BTNS["B"], 20))
         seq.append((BTNS["NOOP"], 60))
 
         if mode == "SUPER_LEAGUE_HARD":
@@ -78,7 +78,14 @@ class AutoMenuBootManager:
         seq.append((BTNS["NOOP"], 180))
         return seq
 
-    def execute_boot_sequence(self, env, streamer=None, tracker=None) -> Tuple[np.ndarray, Dict[str, Any]]:
+    def execute_boot_sequence(self, env, *args, **kwargs) -> Tuple[np.ndarray, Dict[str, Any]]:
+        streamer = kwargs.get("streamer", None)
+        tracker = kwargs.get("tracker", None)
+        if len(args) > 0 and streamer is None:
+            streamer = args[0]
+        if len(args) > 1 and tracker is None:
+            tracker = args[1]
+
         macro = self.get_macro_sequence(self.mode)
         last_obs = None
         last_info = {}
@@ -97,7 +104,7 @@ class AutoMenuBootManager:
                 last_obs = obs
                 last_info = info if isinstance(info, dict) else {}
 
-                # Live-Stream während des Menü-Bypasses aktualisieren, damit du alles live siehst!
+                # Live-Stream während des Menü-Bypasses aktualisieren
                 if streamer is not None and last_obs is not None:
                     summary = tracker.get_summary_dict() if tracker else {}
                     streamer.update_frame(
