@@ -3,14 +3,14 @@ import sys
 import numpy as np
 import time
 
-def auto_detect_menu_and_enter_race(env, streamer=None, tracker=None, max_frames=1200):
+def auto_detect_menu_and_enter_race(env, streamer=None, tracker=None, max_frames=1500):
     """
-    Universeller Menü-Bypass für Micro Machines 2 Genesis:
-    Drückt systematisch die echten Codemasters Menü-Tasten (Taste A, C, START, B)
-    und navigiert präzise von 1 PLAYER -> SUPER LEAGUE -> Spider -> Rennstrecke!
+    Hardware-präziser Menü-Bypass für Micro Machines 2 Genesis:
+    Sendet saubere 'Press & Release' Zyklen mit echtem NOOP-Zustand (Null-Spannung),
+    damit der Genesis 68000 Prozessor die Flanken-Interrupts (Tastendrücke) sauber erkennt!
     """
     print("\n" + "=" * 65)
-    print("🏎️ [AutoPilot] Starte Codemasters Menü-Bypass (A/C/START/B Tasten-Folge)...")
+    print("🏎️ [AutoPilot] Starte Hardware-präzisen 'Press & Release' Menü-Bypass...")
     print("=" * 65)
 
     btn_names = env.unwrapped.buttons if hasattr(env.unwrapped, "buttons") else [
@@ -36,96 +36,85 @@ def auto_detect_menu_and_enter_race(env, streamer=None, tracker=None, max_frames
     if isinstance(obs, tuple):
         obs = obs[0]
 
-    for frame in range(max_frames):
-        # -------------------------------------------------------------
-        # Phase 0 (Frames 0 - 200): Sega & Codemasters Splash Screens
-        # -------------------------------------------------------------
-        if frame < 200:
-            action = BTN_START if (frame % 20 < 10) else BTN_NOOP
-            label = "SKIP_INTROS"
-
-        # -------------------------------------------------------------
-        # Phase 1 (Frames 200 - 450): '1 PLAYER' mit Taste A, C, START, B bestätigen
-        # -------------------------------------------------------------
-        elif frame < 450:
-            cycle = frame % 40
-            if cycle < 10:
-                action = BTN_A
-            elif cycle < 20:
-                action = BTN_C
-            elif cycle < 30:
-                action = BTN_START
+    def send_step(action_mask, count, label_name):
+        nonlocal obs
+        for _ in range(count):
+            step_res = env.step(action_mask)
+            if len(step_res) == 5:
+                obs, r, d, tr, info = step_res
             else:
-                action = BTN_B
-            label = "CONFIRM_1_PLAYER"
+                obs, r, d, info = step_res
 
-        # -------------------------------------------------------------
-        # Phase 2 (Frames 450 - 700): 1x DOWN auf 'SUPER LEAGUE' & mit A/C/B bestätigen
-        # -------------------------------------------------------------
-        elif frame < 700:
-            if frame < 480:
-                action = BTN_DOWN if (frame % 20 < 10) else BTN_NOOP
-            else:
-                cycle = frame % 40
-                if cycle < 10:
-                    action = BTN_A
-                elif cycle < 20:
-                    action = BTN_C
-                elif cycle < 30:
-                    action = BTN_B
-                else:
-                    action = BTN_START
-            label = "SELECT_SUPER_LEAGUE"
+            if streamer is not None and obs is not None:
+                summary = tracker.get_summary_dict() if tracker else {}
+                streamer.update_frame(
+                    raw_bgr_frame=obs,
+                    tracker_summary=summary,
+                    current_lap_ms=0.0,
+                    speed=float(info.get("speed", 0.0)) if isinstance(info, dict) else 0.0,
+                    action_name=label_name,
+                    episode=0,
+                    reward=0.0
+                )
+        return obs, info if isinstance(info, dict) else {}
 
-        # -------------------------------------------------------------
-        # Phase 3 (Frames 700 - 950): Division 1 & Fahrer 'Spider' (1x RIGHT)
-        # -------------------------------------------------------------
-        elif frame < 950:
-            if frame < 730:
-                action = BTN_A if (frame % 20 < 10) else BTN_NOOP
-            elif frame < 770:
-                action = BTN_RIGHT if (frame % 20 < 10) else BTN_NOOP
-            else:
-                cycle = frame % 40
-                if cycle < 10:
-                    action = BTN_A
-                elif cycle < 20:
-                    action = BTN_C
-                elif cycle < 30:
-                    action = BTN_B
-                else:
-                    action = BTN_NOOP
-            label = "SELECT_SPIDER"
+    def press_and_release(button_mask, press_frames=12, release_frames=15, label="PRESS"):
+        send_step(button_mask, press_frames, label)
+        return send_step(BTN_NOOP, release_frames, "RELEASE_NOOP")
 
-        # -------------------------------------------------------------
-        # Phase 4 (Frames 950 - 1200): Startampel & Rennstrecke (Gas geben)
-        # -------------------------------------------------------------
-        else:
-            action = BTN_B
-            label = "RACE_ON_TRACK"
+    # -----------------------------------------------------------------
+    # Schritt 1: Intros & Splash Screens überspringen
+    # -----------------------------------------------------------------
+    print("[AutoPilot] ⏭️ Überspringe Sega & Codemasters Splash Screens...")
+    send_step(BTN_NOOP, 60, "WAIT_INIT")
+    for _ in range(8):
+        press_and_release(BTN_START, press_frames=10, release_frames=15, label="SKIP_INTRO_START")
 
-        step_res = env.step(action)
-        if len(step_res) == 5:
-            obs, r, d, tr, info = step_res
-        else:
-            obs, r, d, info = step_res
+    # -----------------------------------------------------------------
+    # Schritt 2: Auf '1 PLAYER' stehen bleiben und mit B / START / C / A bestätigen
+    # -----------------------------------------------------------------
+    print("[AutoPilot] 🎮 Bestätige '1 PLAYER'...")
+    send_step(BTN_NOOP, 30, "WAIT_MENU")
+    for _ in range(3):
+        press_and_release(BTN_B, press_frames=15, release_frames=15, label="CONFIRM_1_PLAYER_B")
+        press_and_release(BTN_START, press_frames=15, release_frames=15, label="CONFIRM_1_PLAYER_START")
+        press_and_release(BTN_C, press_frames=15, release_frames=15, label="CONFIRM_1_PLAYER_C")
+        press_and_release(BTN_A, press_frames=15, release_frames=15, label="CONFIRM_1_PLAYER_A")
 
-        if streamer is not None and obs is not None:
-            summary = tracker.get_summary_dict() if tracker else {}
-            streamer.update_frame(
-                raw_bgr_frame=obs,
-                tracker_summary=summary,
-                current_lap_ms=0.0,
-                speed=float(info.get("speed", 0.0)) if isinstance(info, dict) else 0.0,
-                action_name=f"{label} (F:{frame})",
-                episode=0,
-                reward=0.0
-            )
+    # -----------------------------------------------------------------
+    # Schritt 3: Im 1-Player-Menü 1x DOWN auf 'SUPER LEAGUE' navigieren & bestätigen
+    # -----------------------------------------------------------------
+    print("[AutoPilot] 🏆 Wähle 'SUPER LEAGUE' (Division 1)...")
+    send_step(BTN_NOOP, 30, "WAIT_SUBMENU")
+    press_and_release(BTN_DOWN, press_frames=12, release_frames=18, label="DOWN_TO_SUPER_LEAGUE")
+    
+    for _ in range(3):
+        press_and_release(BTN_B, press_frames=15, release_frames=15, label="CONFIRM_SUPER_LEAGUE_B")
+        press_and_release(BTN_C, press_frames=15, release_frames=15, label="CONFIRM_SUPER_LEAGUE_C")
+        press_and_release(BTN_START, press_frames=15, release_frames=15, label="CONFIRM_SUPER_LEAGUE_START")
 
-        if frame % 150 == 0:
-            print(f"[AutoPilot] Frame {frame:04d}/{max_frames} | Phase: {label}")
+    # -----------------------------------------------------------------
+    # Schritt 4: Division 1 bestätigen & Fahrer 'Spider' auswählen
+    # -----------------------------------------------------------------
+    print("[AutoPilot] 🕷️ Wähle Fahrer 'Spider'...")
+    send_step(BTN_NOOP, 30, "WAIT_DIV")
+    press_and_release(BTN_B, press_frames=15, release_frames=15, label="CONFIRM_DIV1_B")
+    
+    send_step(BTN_NOOP, 30, "WAIT_CHAR")
+    press_and_release(BTN_RIGHT, press_frames=12, release_frames=18, label="SELECT_SPIDER_RIGHT")
+    
+    for _ in range(3):
+        press_and_release(BTN_B, press_frames=15, release_frames=15, label="CONFIRM_SPIDER_B")
+        press_and_release(BTN_C, press_frames=15, release_frames=15, label="CONFIRM_SPIDER_C")
+        press_and_release(BTN_START, press_frames=15, release_frames=15, label="CONFIRM_SPIDER_START")
+
+    # -----------------------------------------------------------------
+    # Schritt 5: Startampel & Rennstrecke
+    # -----------------------------------------------------------------
+    print("[AutoPilot] 🚦 Warte auf Rennstrecke & Startampel...")
+    last_obs, last_info = send_step(BTN_B, 220, "START_RACE_ACCEL")
 
     print("=" * 65)
     print("🟢 [AutoPilot] RENNSTRECKE ERREICHT! STEUERUNG AN TPU TRANSFORMER ÜBERGEBEN!")
     print("=" * 65 + "\n")
-    return obs, info if isinstance(info, dict) else {}
+    return last_obs, last_info
