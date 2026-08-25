@@ -1,7 +1,8 @@
 import numpy as np
 import cv2
+import os
 from typing import Tuple, Dict, Any, Optional
-from boot_manager import AutoMenuBootManager
+from auto_pilot import auto_detect_menu_and_enter_race
 
 WR_BENCHMARKS = {
     "Breakfast Bends (3 Laps)": 42500.0,   # 42.50s (~14.16s pro Runde)
@@ -22,6 +23,7 @@ ACTION_NAMES = [
     "BRAKE + RIGHT"  # 8: Hard Turn / Handbremse Rechts
 ]
 
+# Standard 12-Button MultiBinary Controller Mask
 ACTION_BUTTONS = [
     [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], # 0: NOOP
     [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], # 1: B (Gas)
@@ -48,7 +50,8 @@ class MicroMachinesEnvWrapper:
         self.frame_skip = frame_skip
         self.target_wr_ms = target_wr_ms
         self.game_mode = game_mode
-        self.boot_manager = AutoMenuBootManager(mode=game_mode)
+
+        self.num_action_buttons = retro_env.action_space.shape[0]
 
         self.frame_buffer = []
         self.ram_buffer = []
@@ -58,6 +61,17 @@ class MicroMachinesEnvWrapper:
         self.cached_race_start_state = None
         self.is_first_boot = True
         self.last_valid_obs = None
+
+    def get_action_array(self, action_idx: int) -> np.ndarray:
+        raw = ACTION_BUTTONS[action_idx]
+        arr = np.zeros(self.num_action_buttons, dtype=np.int8)
+        for i, val in enumerate(raw):
+            if i < self.num_action_buttons:
+                arr[i] = val
+                # Auch auf zweiten Port spiegeln falls vorhanden
+                if i + 12 < self.num_action_buttons:
+                    arr[i + 12] = val
+        return arr
 
     def preprocess_frame(self, raw_frame: np.ndarray) -> np.ndarray:
         if raw_frame is None:
@@ -111,18 +125,18 @@ class MicroMachinesEnvWrapper:
         }
         return ram_vector, telemetry
 
-    def reset(self, streamer=None, tracker=None):
-        # 1. Schneller Restore auf den Startplatz
+    def reset(self, streamer=None, tracker=None, *args, **kwargs):
+        # 1. Instant Restore auf den Startplatz
         if hasattr(self.env, "em") and self.cached_race_start_state is not None:
             self.env.em.set_state(self.cached_race_start_state)
             obs = self.last_valid_obs
             info = {}
         elif self.is_first_boot:
-            reset_res = self.env.reset()
-            obs, info = self.boot_manager.execute_boot_sequence(self.env, streamer=streamer, tracker=tracker)
+            obs, info = auto_detect_menu_and_enter_race(self.env, streamer=streamer, tracker=tracker, max_frames=1300)
             if hasattr(self.env, "em"):
                 try:
                     self.cached_race_start_state = self.env.em.get_state()
+                    print("[Env] 💾 Startgitter-Zustand (SaveState) im RAM gecacht für blitzschnellen Rundenstart!")
                 except Exception:
                     pass
             self.is_first_boot = False
@@ -152,7 +166,7 @@ class MicroMachinesEnvWrapper:
         )
 
     def step(self, action_idx: int):
-        button_array = ACTION_BUTTONS[action_idx]
+        button_array = self.get_action_array(action_idx)
         accumulated_reward = 0.0
         done = False
         last_obs = None
