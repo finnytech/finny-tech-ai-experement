@@ -1,5 +1,6 @@
 import os
 import sys
+import gc
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 if SCRIPT_DIR not in sys.path:
@@ -20,8 +21,24 @@ from wr_tracker import WorldRecordTracker
 from streamer import StreamBroadcaster
 from env_wrapper import MicroMachinesEnvWrapper, ACTION_NAMES
 
+_GLOBAL_RETRO_ENV = None
+
+def close_existing_retro_env():
+    """Closes any previously active Retro emulator instance to prevent singleton collisions."""
+    global _GLOBAL_RETRO_ENV
+    if _GLOBAL_RETRO_ENV is not None:
+        try:
+            _GLOBAL_RETRO_ENV.close()
+        except Exception:
+            pass
+        _GLOBAL_RETRO_ENV = None
+    gc.collect()
+
 def make_real_sega_env():
     """Lädt das echte 16-Bit Sega Mega Drive Spiel Micro Machines 2 in stable-retro."""
+    global _GLOBAL_RETRO_ENV
+    close_existing_retro_env()
+
     import retro
     import retro.data
 
@@ -34,27 +51,23 @@ def make_real_sega_env():
         pass
 
     print("[Env] 🎮 Initialisiere echten Genesis Plus GX Emulator für Micro Machines 2...")
+    
+    # Clean load with ALL integrations
     try:
-        # Versuche registriertes Spiel zu laden
-        env = retro.make(game="MicroMachines2-Genesis")
+        env = retro.make(
+            game="MicroMachines2-Genesis",
+            inttype=retro.data.Integrations.ALL
+        )
+        _GLOBAL_RETRO_ENV = env
         print("[Env] ✅ ECHTES SEGA MEGA DRIVE SPIEL ERFOLGREICH GELADEN! (Echte 16-Bit Grafik & Physik)")
         return env
-    except Exception as e1:
-        print(f"[Env] Versuche direkten custom integration load ({e1})...")
-        try:
-            env = retro.make(
-                game="MicroMachines2-Genesis",
-                inttype=retro.data.Integrations.CUSTOM_ONLY
-            )
-            print("[Env] ✅ ECHTES SEGA MEGA DRIVE SPIEL (CUSTOM) GELADEN!")
-            return env
-        except Exception as e2:
-            print(f"[Env] Versuche stable path load ({e2})...")
-            env = retro.make(
-                game="MicroMachines2-Genesis",
-                inttype=retro.data.Integrations.ALL
-            )
-            return env
+    except Exception as e:
+        print(f"[Env] Versuche direkten Game-Load ({e})...")
+        close_existing_retro_env()
+        env = retro.make(game="MicroMachines2-Genesis")
+        _GLOBAL_RETRO_ENV = env
+        print("[Env] ✅ ECHTES SEGA MEGA DRIVE SPIEL GELADEN!")
+        return env
 
 def main():
     print("=" * 60)
