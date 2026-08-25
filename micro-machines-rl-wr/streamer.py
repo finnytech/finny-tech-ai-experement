@@ -12,7 +12,7 @@ from wr_tracker import WorldRecordTracker
 class ReusableHTTPServer(HTTPServer):
     allow_reuse_address = True
 
-def find_available_port(start_port: int = 8080, max_attempts: int = 20) -> int:
+def find_available_port(start_port: int = 8080, max_attempts: int = 25) -> int:
     """Finds an available TCP port dynamically."""
     for p in range(start_port, start_port + max_attempts):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -58,7 +58,7 @@ class StreamBroadcaster:
         cv2.rectangle(frame, (0, 0), (w, 90), (15, 15, 15), -1)
         cv2.line(frame, (0, 90), (w, 90), (0, 255, 200), 2)
 
-        target_wr = tracker_summary.get("target_wr_str", "--:--:--")
+        target_wr = tracker_summary.get("target_wr_str", "00:42.50")
         best_time = tracker_summary.get("current_best_str", "--:--:--")
         cur_lap_str = WorldRecordTracker.ms_to_time_str(current_lap_ms)
         wins = tracker_summary.get("total_wins", 0)
@@ -130,7 +130,7 @@ class StreamBroadcaster:
     <h1>🏎️ Finny Tech Deep Labs - Micro Machines 2 World Record Live Stream</h1>
     <div>
         <span class="badge" style="color: #00ffc8;">TPU v5e-1 JAX/Flax Transformer</span>
-        <span class="badge" style="color: #ffaa00;">Realtime HUD & WR Telemetry</span>
+        <span class="badge" style="color: #ffaa00;">Super League - Division 1 (Spider)</span>
     </div>
     <br/>
     <div class="stream-box">
@@ -139,7 +139,7 @@ class StreamBroadcaster:
 </body>
 </html>"""
                         self.wfile.write(html.encode("utf-8"))
-                except (ConnectionResetError, BrokenPipeError, socket.error, Exception):
+                except Exception:
                     pass
 
             def log_message(self, format, *args):
@@ -156,7 +156,13 @@ class StreamBroadcaster:
 
     def start_cloudflare_tunnel(self):
         try:
-            # Kill previous cloudflared processes if any
+            # 1. Native Colab Port Forwarding Button
+            try:
+                from google.colab import output
+                output.serve_kernel_port_as_window(self.port, anchor_text=f"📺 Öffne Live-Stream über Google Colab Port {self.port}")
+            except Exception:
+                pass
+
             subprocess.run(["pkill", "-9", "-f", "cloudflared"], check=False)
             time.sleep(0.5)
 
@@ -175,13 +181,14 @@ class StreamBroadcaster:
                 text=True
             )
             
-            for _ in range(50):
+            for _ in range(60):
                 if p.stderr is None:
                     break
                 line = p.stderr.readline()
                 match = re.search(r"https://[a-zA-Z0-9-]+\.trycloudflare\.com", line)
                 if match:
                     self.public_url = match.group(0)
+                    time.sleep(2.0) # DNS Propagation Puffer
                     print("\n" + "=" * 65)
                     print(f"🔥 DEIN LIVE-STREAM LINK:")
                     print(f"👉 {self.public_url}")
@@ -195,7 +202,7 @@ class StreamBroadcaster:
                             <a href="{self.public_url}" target="_blank" style="display: inline-block; padding: 10px 20px; background: #00ffc8; color: #000; font-weight: bold; text-decoration: none; border-radius: 5px; font-size: 16px;">
                                 📺 HIER KLICKEN: LIVE STREAM IM BROWSER ÖFFNEN
                             </a>
-                            <p style="color: #aaa; font-size: 12px; margin-top: 8px;">(Öffnet den Low-Latency 60FPS Stream mit Weltrekord-Telemetrie)</p>
+                            <p style="color: #aaa; font-size: 12px; margin-top: 8px;">(Falls der Link 1-2 Sekunden braucht, kurz aktualisieren - DNS propagiert weltweit!)</p>
                         </div>
                         '''))
                     except Exception:
