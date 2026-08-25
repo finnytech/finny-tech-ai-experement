@@ -1,0 +1,6 @@
+flax
+optax
+jax[cuda12]
+opencv-python
+stable-retro
+cloudflared
