@@ -1,33 +1,32 @@
 import os
 import sys
 import gc
-import subprocess
 import time
+from unittest.mock import MagicMock
 
-# 1. Total Neutralization of pyglet GL check to guarantee ZERO GLException
-try:
-    import pyglet
-    import pyglet.gl
-    import pyglet.gl.lib
-    pyglet.gl.lib.errcheck = lambda result, func, arguments: result
-    class FakeGLContext:
-        _gl_begin = False
-    pyglet.gl.current_context = FakeGLContext()
-except Exception:
-    pass
+# 1. TOTAL HEADLESS ENFORCEMENT: No X11, No Xvfb, No Pyglet GL (Pure C++ RAM Framebuffer)
+os.environ.pop("DISPLAY", None)
+os.environ["PYGLET_HEADLESS"] = "1"
+os.environ["PYGLET_SHADOW_WINDOW"] = "0"
 
-# Auto-Setup Virtual X11 Display (Xvfb)
-if "DISPLAY" not in os.environ or not os.environ.get("DISPLAY"):
-    os.environ["DISPLAY"] = ":1"
-    try:
-        subprocess.Popen(
-            ["Xvfb", ":1", "-screen", "0", "640x480x24", "-ac", "+extension", "GLX", "+render", "-noreset"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL
-        )
-        time.sleep(0.5)
-    except Exception:
+class DummyViewer:
+    def __init__(self, *args, **kwargs):
+        self.isopen = False
+    def imshow(self, arr):
         pass
+    def render(self, *args, **kwargs):
+        pass
+    def close(self):
+        pass
+
+mock_render = MagicMock()
+mock_render.SimpleImageViewer = DummyViewer
+sys.modules["stable_retro.rendering"] = mock_render
+sys.modules["retro.rendering"] = mock_render
+sys.modules["pyglet"] = MagicMock()
+sys.modules["pyglet.gl"] = MagicMock()
+sys.modules["pyglet.window"] = MagicMock()
+sys.modules["pyglet.canvas"] = MagicMock()
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 if SCRIPT_DIR not in sys.path:
@@ -71,14 +70,13 @@ def force_cleanup_all_retro_instances():
     gc.collect()
 
 def make_real_sega_env():
-    """Lädt das echte 16-Bit Sega Mega Drive Spiel Micro Machines 2 in stable-retro im Headless RGB-Array Modus."""
+    """Lädt das echte 16-Bit Sega Mega Drive Spiel in purem C++ Headless Modus."""
     global _GLOBAL_RETRO_ENV
     force_cleanup_all_retro_instances()
 
     import retro
     import retro.data
 
-    # Integration Pfad registrieren
     custom_dir = setup_rom.get_retro_custom_dir()
     parent_integrations = os.path.dirname(custom_dir)
     try:
@@ -86,15 +84,13 @@ def make_real_sega_env():
     except Exception:
         pass
 
-    # Neutralize render on RetroEnv class level to prevent any GUI viewer popup
     try:
-        retro.RetroEnv.render = lambda self, *args, **kwargs: self.get_screen() if hasattr(self, 'get_screen') else None
+        retro.RetroEnv.render = lambda self, *args, **kwargs: None
     except Exception:
         pass
 
-    print("[Env] 🎮 Initialisiere echten Genesis Plus GX Emulator für Micro Machines 2 (Headless)...")
+    print("[Env] 🎮 Initialisiere echten Genesis Plus GX Emulator für Micro Machines 2 (100% Headless RAM)...")
     
-    # Explicit render_mode="rgb_array" to completely disable pyglet human viewer
     try:
         env = retro.make(
             game="MicroMachines2-Genesis",
@@ -102,7 +98,6 @@ def make_real_sega_env():
             render_mode="rgb_array"
         )
     except TypeError:
-        # If older retro version without render_mode arg
         env = retro.make(
             game="MicroMachines2-Genesis",
             inttype=retro.data.Integrations.ALL
