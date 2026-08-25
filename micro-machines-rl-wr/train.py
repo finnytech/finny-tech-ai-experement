@@ -1,7 +1,6 @@
 import os
 import sys
 
-# Garantiert, dass alle Module (model, ppo_jax, wr_tracker etc.) gefunden werden, egal von wo train.py aufgerufen wird
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
@@ -11,64 +10,51 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+# Setup the real Sega Mega Drive ROM
+import setup_rom
+setup_rom.ensure_real_rom()
+
 from model import MicroMachinesTransformerRL
 from ppo_jax import PPOAgent
 from wr_tracker import WorldRecordTracker
 from streamer import StreamBroadcaster
 from env_wrapper import MicroMachinesEnvWrapper, ACTION_NAMES
 
-def make_mock_or_retro_env():
-    """Versucht das echte Sega Mega Drive Environment via stable-retro/gym-retro zu laden."""
+def make_real_sega_env():
+    """Lädt das echte 16-Bit Sega Mega Drive Spiel Micro Machines 2 in stable-retro."""
+    import retro
+    import retro.data
+
+    # Integration Pfad registrieren
+    custom_dir = setup_rom.get_retro_custom_dir()
+    parent_integrations = os.path.dirname(custom_dir)
     try:
-        import retro
-        print("[Env] Found retro/stable-retro! Loading Micro Machines 2 Genesis...")
-        return retro.make(game="MicroMachines2-Genesis", state="BreakfastBends.TimeAttack")
-    except Exception as e:
-        print(f"[Env] Note: Running in high-speed simulation mode ({e}). For real MD ROM execution, import stable-retro.")
-        
-        class MockRetroEnv:
-            def __init__(self):
-                self.step_idx = 0
-                self.progress = 0.0
-                self.speed = 40.0
+        retro.data.Integrations.add_custom_path(parent_integrations)
+    except Exception:
+        pass
 
-            def reset(self):
-                self.step_idx = 0
-                self.progress = 0.0
-                self.speed = 40.0
-                obs = np.random.randint(0, 255, (224, 320, 3), dtype=np.uint8)
-                info = {"speed": self.speed, "lap": 1, "checkpoint": 0, "max_checkpoints": 16, "off_track": 0, "points": 0, "won": False}
-                return obs, info
-
-            def step(self, buttons):
-                self.step_idx += 1
-                if buttons[0] == 1 or buttons[1] == 1:
-                    self.speed = min(120.0, self.speed + 1.2)
-                else:
-                    self.speed = max(0.0, self.speed - 0.8)
-                
-                self.progress = min(1.0, self.progress + (self.speed / 5000.0))
-                done = (self.progress >= 1.0) or (self.step_idx > 800)
-                lap_completed = (self.progress >= 1.0)
-                lap_time_ms = self.step_idx * 16.666
-                
-                obs = np.zeros((224, 320, 3), dtype=np.uint8)
-                obs[100:150, 50:270, 1] = 180
-                obs[120:130, int(60 + self.progress * 180):int(70 + self.progress * 180), 0] = 255
-                
-                info = {
-                    "speed": self.speed,
-                    "lap": 1,
-                    "checkpoint": int(self.progress * 16),
-                    "max_checkpoints": 16,
-                    "off_track": 0 if 100 < self.speed < 115 else 1,
-                    "points": int(self.progress * 50),
-                    "won": lap_completed and (lap_time_ms < 42500.0),
-                    "lap_completed": lap_completed,
-                    "lap_time_ms": lap_time_ms
-                }
-                return obs, 1.0, done, False, info
-        return MockRetroEnv()
+    print("[Env] 🎮 Initialisiere echten Genesis Plus GX Emulator für Micro Machines 2...")
+    try:
+        # Versuche registriertes Spiel zu laden
+        env = retro.make(game="MicroMachines2-Genesis")
+        print("[Env] ✅ ECHTES SEGA MEGA DRIVE SPIEL ERFOLGREICH GELADEN! (Echte 16-Bit Grafik & Physik)")
+        return env
+    except Exception as e1:
+        print(f"[Env] Versuche direkten custom integration load ({e1})...")
+        try:
+            env = retro.make(
+                game="MicroMachines2-Genesis",
+                inttype=retro.data.Integrations.CUSTOM_ONLY
+            )
+            print("[Env] ✅ ECHTES SEGA MEGA DRIVE SPIEL (CUSTOM) GELADEN!")
+            return env
+        except Exception as e2:
+            print(f"[Env] Versuche stable path load ({e2})...")
+            env = retro.make(
+                game="MicroMachines2-Genesis",
+                inttype=retro.data.Integrations.ALL
+            )
+            return env
 
 def main():
     print("=" * 60)
@@ -90,9 +76,9 @@ def main():
     streamer.start_http_server()
     streamer.start_cloudflare_tunnel()
 
-    # 3. Setup Environment
-    base_env = make_mock_or_retro_env()
-    env = MicroMachinesEnvWrapper(base_env, seq_len=16, frame_skip=4, target_wr_ms=TARGET_WR_MS)
+    # 3. Setup ECHTES SEGA MEGA DRIVE GAME
+    base_env = make_real_sega_env()
+    env = MicroMachinesEnvWrapper(base_env, seq_len=16, frame_skip=4, target_wr_ms=TARGET_WR_MS, game_mode="SUPER_LEAGUE_HARD")
 
     # 4. Initialize JAX PPO Agent
     rng = jax.random.PRNGKey(42)
@@ -108,7 +94,7 @@ def main():
 
     # 5. Training Loop
     total_episodes = 10000
-    print("\n🏁 Starting World Record Speedrun Training Loop...\n")
+    print("\n🏁 Starting REAL Sega Mega Drive World Record Speedrun Training...\n")
 
     for ep in range(1, total_episodes + 1):
         frames_seq, rams_seq, raw_obs, telemetry = env.reset()
@@ -147,6 +133,7 @@ def main():
             buf_values.append(value)
             buf_dones.append(1.0 if done else 0.0)
 
+            # Echte 16-Bit Spielgrafik ins Live-Stream Overlay rendern
             streamer.update_frame(
                 raw_bgr_frame=raw_obs,
                 tracker_summary=tracker.get_summary_dict(),
