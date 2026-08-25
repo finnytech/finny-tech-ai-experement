@@ -4,8 +4,12 @@ import numpy as np
 import threading
 import subprocess
 import os
+import socket
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from wr_tracker import WorldRecordTracker
+
+class ReusableHTTPServer(HTTPServer):
+    allow_reuse_address = True
 
 class StreamBroadcaster:
     def __init__(self, port: int = 8080):
@@ -27,20 +31,20 @@ class StreamBroadcaster:
         episode: int,
         reward: float
     ):
-        # Create HUD overlay onto game frame
-        frame = raw_bgr_frame.copy()
-        h, w, _ = frame.shape
+        if raw_bgr_frame is None:
+            return
 
-        # Scale up if needed for crisp viewing
+        frame = raw_bgr_frame.copy()
+        h, w = frame.shape[:2]
+
         if h < 480:
             frame = cv2.resize(frame, (640, 480), interpolation=cv2.INTER_NEAREST)
-            h, w, _ = frame.shape
+            h, w = frame.shape[:2]
 
-        # Overlay Banner at top
+        # Top Banner
         cv2.rectangle(frame, (0, 0), (w, 90), (15, 15, 15), -1)
         cv2.line(frame, (0, 90), (w, 90), (0, 255, 200), 2)
 
-        # Telemetry Texts
         target_wr = tracker_summary.get("target_wr_str", "--:--:--")
         best_time = tracker_summary.get("current_best_str", "--:--:--")
         cur_lap_str = WorldRecordTracker.ms_to_time_str(current_lap_ms)
@@ -48,23 +52,23 @@ class StreamBroadcaster:
         points = tracker_summary.get("total_points", 0)
         wr_beaten = tracker_summary.get("wr_beaten", False)
 
-        # Status text
         status_color = (0, 255, 0) if wr_beaten else (0, 200, 255)
         status_text = " WORLD RECORD BEATEN! " if wr_beaten else f"HUNTING WR ({target_wr})"
 
-        cv2.putText(frame, f"FINNY TECH DEEP LABS - MM2 WR AGENT", (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 200), 2)
+        cv2.putText(frame, "FINNY TECH DEEP LABS - MM2 WR AGENT", (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 200), 2)
         cv2.putText(frame, f"STATUS: {status_text}", (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.55, status_color, 2)
         cv2.putText(frame, f"LAP: {cur_lap_str}  |  BEST: {best_time}  |  WR TARGET: {target_wr}", (10, 75), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
 
-        # Bottom HUD
+        # Bottom Banner
         cv2.rectangle(frame, (0, h - 45), (w, h), (15, 15, 15), -1)
         cv2.line(frame, (0, h - 45), (w, h - 45), (0, 255, 200), 1)
         cv2.putText(frame, f"Ep: {episode} | Pts: {points} | Wins: {wins} | Speed: {int(speed)} | Act: {action_name} | Rew: {reward:.1f}", 
                     (10, h - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (200, 200, 200), 1)
 
-        _, jpeg = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
-        with self.lock:
-            self.latest_jpeg = jpeg.tobytes()
+        success, jpeg = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+        if success:
+            with self.lock:
+                self.latest_jpeg = jpeg.tobytes()
 
     def get_frame(self):
         with self.lock:
@@ -91,23 +95,24 @@ class StreamBroadcaster:
                                 self.end_headers()
                                 self.wfile.write(frame)
                                 self.wfile.write(b"\r\n")
-                            time.sleep(0.033) # ~30 FPS
-                    except Exception:
+                            time.sleep(0.033)
+                    except (ConnectionResetError, BrokenPipeError, socket.error):
                         pass
                 else:
                     self.send_response(200)
-                    self.send_header("Content-Type", "text/html")
+                    self.send_header("Content-Type", "text/html; charset=utf-8")
                     self.end_headers()
-                    html = f"""<!DOCTYPE html>
+                    html = """<!DOCTYPE html>
 <html>
 <head>
+    <meta charset="utf-8">
     <title>Finny Tech Deep Labs - Micro Machines 2 WR Tracker</title>
     <style>
-        body {{ background-color: #0b0f19; color: #fff; font-family: monospace; text-align: center; margin: 0; padding: 20px; }}
-        h1 {{ color: #00ffc8; margin-bottom: 5px; }}
-        .stream-box {{ display: inline-block; border: 3px solid #00ffc8; border-radius: 8px; overflow: hidden; box-shadow: 0 0 20px rgba(0,255,200,0.3); }}
-        img {{ display: block; max-width: 100%; height: auto; }}
-        .badge {{ display: inline-block; padding: 6px 12px; margin: 10px; border-radius: 4px; background: #1f293d; font-weight: bold; }}
+        body { background-color: #0b0f19; color: #fff; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', monospace; text-align: center; margin: 0; padding: 20px; }
+        h1 { color: #00ffc8; margin-bottom: 5px; }
+        .stream-box { display: inline-block; border: 3px solid #00ffc8; border-radius: 8px; overflow: hidden; box-shadow: 0 0 20px rgba(0,255,200,0.3); background: #000; }
+        img { display: block; max-width: 100%; height: auto; }
+        .badge { display: inline-block; padding: 6px 12px; margin: 10px; border-radius: 4px; background: #1f293d; font-weight: bold; }
     </style>
 </head>
 <body>
@@ -116,6 +121,7 @@ class StreamBroadcaster:
         <span class="badge" style="color: #00ffc8;">TPU v5e-1 JAX/Flax Transformer</span>
         <span class="badge" style="color: #ffaa00;">Realtime HUD & WR Telemetry</span>
     </div>
+    <br/>
     <div class="stream-box">
         <img src="/stream.mjpg" width="640" height="480" />
     </div>
@@ -124,18 +130,19 @@ class StreamBroadcaster:
                     self.wfile.write(html.encode("utf-8"))
 
             def log_message(self, format, *args):
-                return  # Suppress request logging
+                return
 
-        self.server = HTTPServer(("0.0.0.0", self.port), Handler)
-        self.running = True
-        self.server_thread = threading.Thread(target=self.server.serve_forever, daemon=True)
-        self.server_thread.start()
-        print(f"[Streamer] Live Web Server started on port {self.port}")
+        try:
+            self.server = ReusableHTTPServer(("0.0.0.0", self.port), Handler)
+            self.running = True
+            self.server_thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+            self.server_thread.start()
+            print(f"[Streamer] Live Web Server started on port {self.port}")
+        except Exception as e:
+            print(f"[Streamer] Server start warning: {e}")
 
     def start_cloudflare_tunnel(self):
-        """Starts cloudflared in the background to get a public HTTPS link in Colab."""
         try:
-            # Download cloudflared if not present (Linux/Colab)
             if not os.path.exists("./cloudflared"):
                 subprocess.run(["wget", "-q", "-nc", "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64", "-O", "cloudflared"], check=False)
                 subprocess.run(["chmod", "+x", "./cloudflared"], check=False)
@@ -146,8 +153,9 @@ class StreamBroadcaster:
                 stderr=subprocess.PIPE,
                 text=True
             )
-            # Find tunnel url in stderr
             for _ in range(30):
+                if p.stderr is None:
+                    break
                 line = p.stderr.readline()
                 if "trycloudflare.com" in line:
                     for part in line.split():
@@ -161,4 +169,4 @@ class StreamBroadcaster:
                         break
                 time.sleep(0.5)
         except Exception as e:
-            print(f"[Streamer] Note: Cloudflare tunnel setup info: {e}")
+            print(f"[Streamer] Cloudflare tunnel notice: {e}")

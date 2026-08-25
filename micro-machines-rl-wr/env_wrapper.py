@@ -4,8 +4,8 @@ from typing import Tuple, Dict, Any, Optional
 from boot_manager import AutoMenuBootManager
 
 WR_BENCHMARKS = {
-    "Breakfast Bends (3 Laps)": 42500.0,   # 42.50s
-    "Breakfast Bends (Best Lap)": 13950.0, # 13.95s
+    "Breakfast Bends (3 Laps)": 42500.0,   # 42.50s (~14.16s pro Runde)
+    "Breakfast Bends (Best Lap)": 13950.0, # 13.95s Einzelrunden-Rekord
     "Garden Jumps (3 Laps)": 73420.0,      # 73.42s
     "Desktop Destruction": 51200.0,        # 51.20s
 }
@@ -59,12 +59,21 @@ class MicroMachinesEnvWrapper:
         self.is_first_boot = True
 
     def preprocess_frame(self, raw_frame: np.ndarray) -> np.ndarray:
-        gray = cv2.cvtColor(raw_frame, cv2.COLOR_RGB2GRAY)
+        if raw_frame is None:
+            return np.zeros((84, 84, 1), dtype=np.float32)
+        if len(raw_frame.shape) == 3 and raw_frame.shape[2] == 3:
+            gray = cv2.cvtColor(raw_frame, cv2.COLOR_RGB2GRAY)
+        elif len(raw_frame.shape) == 3 and raw_frame.shape[2] == 1:
+            gray = raw_frame[:, :, 0]
+        else:
+            gray = raw_frame
         resized = cv2.resize(gray, (84, 84), interpolation=cv2.INTER_AREA)
         normalized = (resized.astype(np.float32) / 255.0)[:, :, np.newaxis]
         return normalized
 
     def extract_ram_state(self, info: Dict[str, Any]) -> Tuple[np.ndarray, Dict[str, Any]]:
+        if not isinstance(info, dict):
+            info = {}
         speed = float(info.get("speed", 0.0))
         lap = int(info.get("lap", 1))
         checkpoint = int(info.get("checkpoint", 0))
@@ -97,20 +106,30 @@ class MicroMachinesEnvWrapper:
         return ram_vector, telemetry
 
     def reset(self):
-        # 1. Schneller Restore auf den Startplatz ('3, 2, 1, GO')
+        # 1. Schneller Restore auf den Startplatz
         if hasattr(self.env, "em") and self.cached_race_start_state is not None:
             self.env.em.set_state(self.cached_race_start_state)
-            obs = self.env.get_screen()
+            if hasattr(self.env, "get_screen"):
+                obs = self.env.get_screen()
+            else:
+                obs = np.zeros((224, 320, 3), dtype=np.uint8)
             info = {}
         elif self.is_first_boot:
-            # Erster Start: Auto-Menu-Bypass ausführen
-            self.env.reset()
+            reset_res = self.env.reset()
             obs, info = self.boot_manager.execute_boot_sequence(self.env)
             if hasattr(self.env, "em"):
-                self.cached_race_start_state = self.env.em.get_state()
+                try:
+                    self.cached_race_start_state = self.env.em.get_state()
+                except Exception:
+                    pass
             self.is_first_boot = False
         else:
-            obs, info = self.env.reset()
+            reset_res = self.env.reset()
+            if isinstance(reset_res, tuple) and len(reset_res) == 2:
+                obs, info = reset_res
+            else:
+                obs = reset_res
+                info = {}
 
         self.total_frames_rendered = 0
         self.lap_start_step = 0
@@ -133,19 +152,24 @@ class MicroMachinesEnvWrapper:
         button_array = ACTION_BUTTONS[action_idx]
         accumulated_reward = 0.0
         done = False
-        truncated = False
         last_obs = None
         last_info = {}
 
         for _ in range(self.frame_skip):
             self.total_frames_rendered += 1
-            obs, r, d, tr, info = self.env.step(button_array)
-            accumulated_reward += r
+            step_res = self.env.step(button_array)
+            if len(step_res) == 5:
+                obs, r, d, tr, info = step_res
+                d_flag = d or tr
+            else:
+                obs, r, d, info = step_res
+                d_flag = d
+
+            accumulated_reward += float(r)
             last_obs = obs
-            last_info = info
-            if d or tr:
+            last_info = info if isinstance(info, dict) else {}
+            if d_flag:
                 done = True
-                truncated = tr
                 break
 
         proc_frame = self.preprocess_frame(last_obs)
@@ -160,7 +184,6 @@ class MicroMachinesEnvWrapper:
         progress_delta = telemetry["progress"] - self.prev_progress
         self.prev_progress = telemetry["progress"]
 
-        # Forward Drive & Velocity
         reward = (progress_delta * 15.0) + (telemetry["speed"] * 0.02)
 
         if telemetry["off_track"]:
@@ -177,4 +200,4 @@ class MicroMachinesEnvWrapper:
         frames_seq = np.array(self.frame_buffer)[np.newaxis, ...]
         rams_seq = np.array(self.ram_buffer)[np.newaxis, ...]
 
-        return frames_seq, rams_seq, reward, done or truncated, last_obs, telemetry
+        return frames_seq, rams_seq, reward, done, last_obs, telemetry

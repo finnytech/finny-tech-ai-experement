@@ -16,7 +16,8 @@ class PPOAgent:
         vf_coef: float = 0.5,
         ent_coef: float = 0.01,
         gamma: float = 0.99,
-        gae_lambda: float = 0.95
+        gae_lambda: float = 0.95,
+        dtype: Any = jnp.float32
     ):
         self.num_actions = num_actions
         self.seq_len = seq_len
@@ -32,7 +33,8 @@ class PPOAgent:
             embed_dim=256,
             num_layers=4,
             num_heads=4,
-            ram_state_dim=ram_state_dim
+            ram_state_dim=ram_state_dim,
+            dtype=dtype
         )
         self.tx = optax.chain(
             optax.clip_by_global_norm(0.5),
@@ -53,7 +55,6 @@ class PPOAgent:
         ram_states: jnp.ndarray,
         rng: jax.Array
     ) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
-        # frames: [B, T, 84, 84, 1], ram_states: [B, T, D]
         logits, value = state.apply_fn(state.params, frames, ram_states, deterministic=True)
         action = jax.random.categorical(rng, logits, axis=-1)
         log_prob = jax.nn.log_softmax(logits, axis=-1)
@@ -62,10 +63,10 @@ class PPOAgent:
 
     @staticmethod
     def compute_gae(
-        rewards: jnp.ndarray,    # [T_steps, B]
-        values: jnp.ndarray,     # [T_steps, B]
-        dones: jnp.ndarray,      # [T_steps, B]
-        last_value: jnp.ndarray, # [B]
+        rewards: jnp.ndarray,    # [T_steps]
+        values: jnp.ndarray,     # [T_steps]
+        dones: jnp.ndarray,      # [T_steps]
+        last_value: jnp.ndarray, # scalar
         gamma: float = 0.99,
         lam: float = 0.95
     ) -> Tuple[jnp.ndarray, jnp.ndarray]:
@@ -85,7 +86,7 @@ class PPOAgent:
             last_gae = delta + gamma * lam * next_non_terminal * last_gae
             advantages.insert(0, last_gae)
 
-        advantages = jnp.array(advantages)
+        advantages = jnp.array(advantages, dtype=jnp.float32)
         returns = advantages + values
         # Normalize advantages
         advantages = (advantages - jnp.mean(advantages)) / (jnp.std(advantages) + 1e-8)
@@ -105,7 +106,7 @@ class PPOAgent:
         vf_coef: float = 0.5,
         ent_coef: float = 0.01
     ):
-        logits, values = apply_fn(params, frames, ram_states, deterministic=False)
+        logits, values = apply_fn(params, frames, ram_states, deterministic=True)
         log_probs = jax.nn.log_softmax(logits, axis=-1)
         cur_log_probs = jnp.take_along_axis(log_probs, jnp.expand_dims(actions, -1), axis=-1).squeeze(-1)
 

@@ -1,41 +1,44 @@
 import jax
 import jax.numpy as jnp
 from flax import linen as nn
-from typing import Tuple
+from typing import Tuple, Any
 
 class OptimizedCausalSelfAttention(nn.Module):
     num_heads: int
     head_dim: int
     dropout_rate: float = 0.0
-    dtype: jnp.dtype = jnp.bfloat16
+    dtype: Any = jnp.float32
 
     @nn.compact
     def __call__(self, x: jnp.ndarray, deterministic: bool = True) -> jnp.ndarray:
+        # x: [B, T, D]
         b, t, d = x.shape
         total_dim = self.num_heads * self.head_dim
 
-        # Fused QKV Projection with TPU bfloat16 acceleration
+        # Fused QKV Projection
         qkv = nn.Dense(3 * total_dim, use_bias=False, dtype=self.dtype, name="qkv_proj")(x)
         qkv = qkv.reshape((b, t, 3, self.num_heads, self.head_dim))
-        qkv = jnp.transpose(qkv, (2, 0, 3, 1, 4)) # [3, B, heads, T, head_dim]
-        q, k, v = qkv[0], qkv[1], qkv[2]
+        
+        # Split into Q, K, V -> [B, num_heads, T, head_dim]
+        q = qkv[:, :, 0, :, :].swapaxes(1, 2)
+        k = qkv[:, :, 1, :, :].swapaxes(1, 2)
+        v = qkv[:, :, 2, :, :].swapaxes(1, 2)
 
-        # Causal Mask
+        # Scaled Dot-Product Attention
+        scale = 1.0 / jnp.sqrt(self.head_dim).astype(self.dtype)
+        scores = jnp.matmul(q, k.swapaxes(-1, -2)) * scale # [B, heads, T, T]
+
+        # Causal Lower-Triangular Mask
         causal_mask = jnp.tril(jnp.ones((t, t), dtype=bool))
         causal_mask = jnp.expand_dims(causal_mask, (0, 1)) # [1, 1, T, T]
+        scores = jnp.where(causal_mask, scores, -1e9)
 
-        # Use JAX's fused dot product attention (XLA / TPU optimized)
-        out = jax.nn.dot_product_attention(
-            query=q,
-            key=k,
-            value=v,
-            mask=causal_mask,
-            dropout_rng=None if deterministic else self.make_rng("dropout"),
-            dropout_rate=self.dropout_rate if not deterministic else 0.0,
-            deterministic=deterministic
-        )
+        attn_weights = jax.nn.softmax(scores, axis=-1)
+        if not deterministic and self.dropout_rate > 0.0 and self.has_rng("dropout"):
+            attn_weights = nn.Dropout(rate=self.dropout_rate)(attn_weights, deterministic=deterministic)
 
-        out = jnp.transpose(out, (0, 2, 1, 3)).reshape((b, t, total_dim))
+        out = jnp.matmul(attn_weights, v) # [B, heads, T, head_dim]
+        out = out.swapaxes(1, 2).reshape((b, t, total_dim))
         out = nn.Dense(d, dtype=self.dtype, name="out_proj")(out)
         return out
 
@@ -44,7 +47,7 @@ class OptimizedTransformerBlock(nn.Module):
     head_dim: int
     mlp_ratio: int = 4
     dropout_rate: float = 0.0
-    dtype: jnp.dtype = jnp.bfloat16
+    dtype: Any = jnp.float32
 
     @nn.compact
     def __call__(self, x: jnp.ndarray, deterministic: bool = True) -> jnp.ndarray:
@@ -58,7 +61,7 @@ class OptimizedTransformerBlock(nn.Module):
         )(norm1, deterministic=deterministic)
         x = x + attn_out
 
-        # Pre-LN SwiGLU / GeLU MLP
+        # Pre-LN GELU MLP
         norm2 = nn.LayerNorm(dtype=self.dtype)(x)
         d = x.shape[-1]
         mlp_out = nn.Dense(d * self.mlp_ratio, dtype=self.dtype)(norm2)
@@ -69,7 +72,7 @@ class OptimizedTransformerBlock(nn.Module):
 
 class FastPatchCNN(nn.Module):
     embed_dim: int
-    dtype: jnp.dtype = jnp.bfloat16
+    dtype: Any = jnp.float32
 
     @nn.compact
     def __call__(self, frame: jnp.ndarray) -> jnp.ndarray:
@@ -94,7 +97,7 @@ class MicroMachinesTransformerRL(nn.Module):
     num_layers: int = 4
     num_heads: int = 4
     ram_state_dim: int = 16
-    dtype: jnp.dtype = jnp.bfloat16
+    dtype: Any = jnp.float32
 
     @nn.compact
     def __call__(
@@ -105,18 +108,18 @@ class MicroMachinesTransformerRL(nn.Module):
     ) -> Tuple[jnp.ndarray, jnp.ndarray]:
         b, t, _, _, _ = frames.shape
 
-        # 1. Visual Tokenizer
+        # 1. Visual Feature Extraction
         frame_tokens = FastPatchCNN(embed_dim=self.embed_dim, dtype=self.dtype)(frames)
 
-        # 2. RAM State Telemetry Projection
+        # 2. RAM Telemetry Projection
         ram_tokens = nn.Dense(self.embed_dim, dtype=self.dtype)(ram_states.astype(self.dtype))
         ram_tokens = jax.nn.gelu(ram_tokens)
 
-        # 3. Multimodal Summation + Positional Encoding
+        # 3. Multimodal Fusion + Learned Positional Encoding
         pos_emb = self.param("pos_emb", nn.initializers.normal(stddev=0.02), (1, t, self.embed_dim))
         x = frame_tokens + ram_tokens + pos_emb.astype(self.dtype)
 
-        # 4. Transformer Attention Layers
+        # 4. Transformer Attention Backbone
         head_dim = self.embed_dim // self.num_heads
         for i in range(self.num_layers):
             x = OptimizedTransformerBlock(
@@ -127,12 +130,12 @@ class MicroMachinesTransformerRL(nn.Module):
             )(x, deterministic=deterministic)
 
         x = nn.LayerNorm(dtype=self.dtype, name="final_ln")(x)
-        latest_token = x[:, -1, :].astype(jnp.float32) # Cast to float32 for stable logit/value calculation
+        latest_token = x[:, -1, :].astype(jnp.float32)
 
-        # 5. Actor Head (Mega Drive Controller Action Logits)
+        # 5. Actor Head
         action_logits = nn.Dense(self.num_actions, name="actor_head")(latest_token)
 
-        # 6. Critic Head (Value Function Baseline)
+        # 6. Critic Head
         value = nn.Dense(1, name="critic_head")(latest_token)
         value = jnp.squeeze(value, axis=-1)
 

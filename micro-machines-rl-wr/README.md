@@ -13,8 +13,9 @@ Führe diese Zellen in Google Colab aus:
 !git clone https://github.com/finnytech/finny-tech-ai-experement.git
 %cd finny-tech-ai-experement/micro-machines-rl-wr
 
-# 2. Abhängigkeiten installieren
-!pip install -q jax[tpu] flax optax opencv-python gym-retro stable-retro
+# 2. Systempakete & RL-Abhängigkeiten installieren
+!apt-get update -qq && apt-get install -y -qq cmake libgl1-mesa-glx libglib2.0-0 zlib1g-dev
+!pip install -q flax optax opencv-python stable-retro
 !wget -q -nc https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -O cloudflared
 !chmod +x cloudflared
 
@@ -26,7 +27,7 @@ Führe diese Zellen in Google Colab aus:
 
 ## 📂 Struktur
 
-- `model.py`: From-Scratch Causal Transformer Policy & Value Network (`bfloat16`, Fused Attention).
+- `model.py`: From-Scratch Causal Transformer Policy & Value Network (`bfloat16` & `float32` universal support).
 - `ppo_jax.py`: JAX/Optax PPO Training Step & GAE Berechnung.
 - `boot_manager.py`: Automatischer Menü-Bypass (Super League Division 1 + Spider).
 - `env_wrapper.py`: Human Frame-Skipping (4 Frames / 15 Hz) & RAM State Caching.

@@ -11,19 +11,20 @@ from streamer import StreamBroadcaster
 from env_wrapper import MicroMachinesEnvWrapper, ACTION_NAMES
 
 def make_mock_or_retro_env():
-    """Tries to create stable-retro/gym-retro env, otherwise creates an emulation mock for testing."""
+    """Versucht das echte Sega Mega Drive Environment via stable-retro/gym-retro zu laden."""
     try:
         import retro
         print("[Env] Found retro/stable-retro! Loading Micro Machines 2 Genesis...")
         return retro.make(game="MicroMachines2-Genesis", state="BreakfastBends.TimeAttack")
     except Exception as e:
-        print(f"[Env] Note: running in mock simulation mode ({e}). For real MD execution install stable-retro.")
+        print(f"[Env] Note: running in simulation mode ({e}). For real MD execution install stable-retro.")
         
         class MockRetroEnv:
             def __init__(self):
                 self.step_idx = 0
                 self.progress = 0.0
                 self.speed = 40.0
+
             def reset(self):
                 self.step_idx = 0
                 self.progress = 0.0
@@ -31,21 +32,24 @@ def make_mock_or_retro_env():
                 obs = np.random.randint(0, 255, (224, 320, 3), dtype=np.uint8)
                 info = {"speed": self.speed, "lap": 1, "checkpoint": 0, "max_checkpoints": 16, "off_track": 0, "points": 0, "won": False}
                 return obs, info
+
             def step(self, buttons):
                 self.step_idx += 1
-                # If accel (button 0 or 1)
+                # If accel button pressed
                 if buttons[0] == 1 or buttons[1] == 1:
                     self.speed = min(120.0, self.speed + 1.2)
                 else:
                     self.speed = max(0.0, self.speed - 0.8)
+                
                 self.progress = min(1.0, self.progress + (self.speed / 5000.0))
                 done = (self.progress >= 1.0) or (self.step_idx > 800)
                 lap_completed = (self.progress >= 1.0)
                 lap_time_ms = self.step_idx * 16.666
+                
                 obs = np.zeros((224, 320, 3), dtype=np.uint8)
-                # Draw mock car track
                 obs[100:150, 50:270, 1] = 180
                 obs[120:130, int(60 + self.progress * 180):int(70 + self.progress * 180), 0] = 255
+                
                 info = {
                     "speed": self.speed,
                     "lap": 1,
@@ -53,7 +57,7 @@ def make_mock_or_retro_env():
                     "max_checkpoints": 16,
                     "off_track": 0 if 100 < self.speed < 115 else 1,
                     "points": int(self.progress * 50),
-                    "won": lap_completed and (lap_time_ms < 48250.0),
+                    "won": lap_completed and (lap_time_ms < 42500.0),
                     "lap_completed": lap_completed,
                     "lap_time_ms": lap_time_ms
                 }
@@ -63,11 +67,11 @@ def make_mock_or_retro_env():
 def main():
     print("=" * 60)
     print("🚀 FINNY TECH DEEP LABS - MICRO MACHINES 2 WR AGENT (JAX/FLAX)")
-    print(f"Devices detected: {jax.devices()}")
+    print(f"JAX Devices detected: {jax.devices()}")
     print("=" * 60)
 
-    # 1. Setup World Record Tracker & Target
-    TARGET_WR_MS = 48250.0 # 48.25s World Record Target
+    # 1. Setup World Record Tracker & Target (42.50s Benchmark)
+    TARGET_WR_MS = 42500.0
     tracker = WorldRecordTracker(
         track_name="Breakfast Bends",
         target_wr_ms=TARGET_WR_MS,
@@ -82,7 +86,7 @@ def main():
 
     # 3. Setup Environment
     base_env = make_mock_or_retro_env()
-    env = MicroMachinesEnvWrapper(base_env, seq_len=16, target_wr_ms=TARGET_WR_MS)
+    env = MicroMachinesEnvWrapper(base_env, seq_len=16, frame_skip=4, target_wr_ms=TARGET_WR_MS)
 
     # 4. Initialize JAX PPO Agent
     rng = jax.random.PRNGKey(42)
@@ -98,8 +102,6 @@ def main():
 
     # 5. Training Loop
     total_episodes = 10000
-    rollout_steps = 128
-
     print("\n🏁 Starting World Record Speedrun Training Loop...\n")
 
     for ep in range(1, total_episodes + 1):
@@ -107,7 +109,6 @@ def main():
         ep_reward = 0.0
         done = False
 
-        # Trajectory Buffers for PPO Update
         buf_frames = []
         buf_rams = []
         buf_actions = []
@@ -119,7 +120,6 @@ def main():
         while not done:
             rng, act_rng = jax.random.split(rng)
             
-            # Agent selects action
             action_arr, log_prob_arr, value_arr = agent.select_action(
                 train_state,
                 jnp.array(frames_seq),
@@ -130,11 +130,9 @@ def main():
             log_prob = float(log_prob_arr[0])
             value = float(value_arr[0])
 
-            # Step Environment
             next_frames, next_rams, reward, done, raw_obs, telemetry = env.step(action_idx)
             ep_reward += reward
 
-            # Record to Buffers
             buf_frames.append(frames_seq[0])
             buf_rams.append(rams_seq[0])
             buf_actions.append(action_idx)
@@ -143,7 +141,6 @@ def main():
             buf_values.append(value)
             buf_dones.append(1.0 if done else 0.0)
 
-            # Update Live Streamer HUD
             streamer.update_frame(
                 raw_bgr_frame=raw_obs,
                 tracker_summary=tracker.get_summary_dict(),
@@ -157,7 +154,6 @@ def main():
             frames_seq = next_frames
             rams_seq = next_rams
 
-        # Episode Ended -> Register with World Record Tracker
         lap_time = telemetry.get("lap_time_ms", 0.0)
         points = telemetry.get("points", 0)
         won = telemetry.get("won", False)
@@ -172,13 +168,11 @@ def main():
             checkpoint_progress_pct=telemetry.get("progress", 0.0) * 100.0
         )
 
-        # Print Live Terminal Status & WR Alerts
         if metrics.is_world_record:
             print(f"\n🔥🔥🔥 [NEW WORLD RECORD BROKEN!] Lap: {metrics.lap_time_str} (Target: {tracker.ms_to_time_str(TARGET_WR_MS)}) Delta: {metrics.delta_to_wr_ms:.2f}ms | Points: {points} | Ep: {ep} 🔥🔥🔥\n")
         else:
             print(f"[Ep {ep:04d}] Lap: {metrics.lap_time_str} | Best: {tracker.ms_to_time_str(tracker.current_best_lap_ms)} | Pts: {points} | Wins: {tracker.total_wins} | Rew: {ep_reward:.1f}")
 
-        # Train PPO on TPU with collected Trajectories
         if len(buf_frames) > 16:
             _, _, last_val_arr = agent.select_action(train_state, jnp.array(frames_seq), jnp.array(rams_seq), rng)
             advantages, returns = agent.compute_gae(
