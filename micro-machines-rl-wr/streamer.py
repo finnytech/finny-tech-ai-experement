@@ -5,15 +5,28 @@ import threading
 import subprocess
 import os
 import socket
+import re
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from wr_tracker import WorldRecordTracker
 
 class ReusableHTTPServer(HTTPServer):
     allow_reuse_address = True
 
+def find_available_port(start_port: int = 8080, max_attempts: int = 20) -> int:
+    """Finds an available TCP port dynamically."""
+    for p in range(start_port, start_port + max_attempts):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                s.bind(("0.0.0.0", p))
+                return p
+            except OSError:
+                continue
+    return start_port
+
 class StreamBroadcaster:
     def __init__(self, port: int = 8080):
-        self.port = port
+        self.port = find_available_port(port)
         self.latest_jpeg = None
         self.lock = threading.Lock()
         self.running = False
@@ -143,30 +156,53 @@ class StreamBroadcaster:
 
     def start_cloudflare_tunnel(self):
         try:
-            if not os.path.exists("./cloudflared"):
+            # Kill previous cloudflared processes if any
+            subprocess.run(["pkill", "-9", "-f", "cloudflared"], check=False)
+            time.sleep(0.5)
+
+            bin_path = "./cloudflared"
+            if not os.path.exists(bin_path):
+                bin_path = "/content/cloudflared"
+            if not os.path.exists(bin_path):
                 subprocess.run(["wget", "-q", "-nc", "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64", "-O", "cloudflared"], check=False)
-                subprocess.run(["chmod", "+x", "./cloudflared"], check=False)
+                subprocess.run(["chmod", "+x", "cloudflared"], check=False)
+                bin_path = "./cloudflared"
             
             p = subprocess.Popen(
-                ["./cloudflared", "tunnel", "--url", f"http://localhost:{self.port}"],
+                [bin_path, "tunnel", "--url", f"http://127.0.0.1:{self.port}"],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True
             )
-            for _ in range(30):
+            
+            # Read stderr lines until URL is found
+            for _ in range(50):
                 if p.stderr is None:
                     break
                 line = p.stderr.readline()
-                if "trycloudflare.com" in line:
-                    for part in line.split():
-                        if "trycloudflare.com" in part:
-                            self.public_url = part.strip()
-                            print(f"\n=======================================================")
-                            print(f"🔥 PUBLIC LIVE STREAM LINK: {self.public_url}")
-                            print(f"=======================================================\n")
-                            break
-                    if self.public_url:
-                        break
-                time.sleep(0.5)
+                match = re.search(r"https://[a-zA-Z0-9-]+\.trycloudflare\.com", line)
+                if match:
+                    self.public_url = match.group(0)
+                    print("\n" + "=" * 65)
+                    print(f"🔥 DEIN LIVE-STREAM LINK:")
+                    print(f"👉 {self.public_url}")
+                    print("=" * 65 + "\n")
+
+                    # If running inside Jupyter / Colab, display clickable HTML button
+                    try:
+                        from IPython.display import display, HTML
+                        display(HTML(f'''
+                        <div style="padding: 15px; background: #0b0f19; border: 2px solid #00ffc8; border-radius: 8px; margin: 15px 0;">
+                            <h3 style="color: #00ffc8; margin: 0 0 10px 0;">🏎️ Finny Tech Deep Labs - Live Stream Bereit!</h3>
+                            <a href="{self.public_url}" target="_blank" style="display: inline-block; padding: 10px 20px; background: #00ffc8; color: #000; font-weight: bold; text-decoration: none; border-radius: 5px; font-size: 16px;">
+                                📺 HIER KLICKEN: LIVE STREAM IM BROWSER ÖFFNEN
+                            </a>
+                            <p style="color: #aaa; font-size: 12px; margin-top: 8px;">(Öffnet den Low-Latency 60FPS Stream mit Weltrekord-Telemetrie)</p>
+                        </div>
+                        '''))
+                    except Exception:
+                        pass
+                    break
+                time.sleep(0.3)
         except Exception as e:
             print(f"[Streamer] Cloudflare tunnel notice: {e}")
