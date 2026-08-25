@@ -23,7 +23,7 @@ ACTION_NAMES = [
     "BRAKE + RIGHT"  # 8: Hard Turn / Handbremse Rechts
 ]
 
-# Standard 12-Button MultiBinary Controller Mask
+# Standard 12-Button Mask pro Port (0: B, 1: A, 2: MODE, 3: START, 4: UP, 5: DOWN, 6: LEFT, 7: RIGHT, 8: C)
 ACTION_BUTTONS = [
     [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], # 0: NOOP
     [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], # 1: B (Gas)
@@ -63,14 +63,13 @@ class MicroMachinesEnvWrapper:
         self.last_valid_obs = None
 
     def get_action_array(self, action_idx: int) -> np.ndarray:
-        raw = ACTION_BUTTONS[action_idx]
+        raw_12 = ACTION_BUTTONS[action_idx]
         arr = np.zeros(self.num_action_buttons, dtype=np.int8)
-        for i, val in enumerate(raw):
-            if i < self.num_action_buttons:
-                arr[i] = val
-                # Auch auf zweiten Port spiegeln falls vorhanden
-                if i + 12 < self.num_action_buttons:
-                    arr[i + 12] = val
+        # Über alle Spieler-Ports (Port 1, Port 2, J-Cart 3, J-Cart 4) spiegeln
+        for port_offset in range(0, max(1, self.num_action_buttons), 12):
+            for i, val in enumerate(raw_12):
+                if port_offset + i < self.num_action_buttons:
+                    arr[port_offset + i] = val
         return arr
 
     def preprocess_frame(self, raw_frame: np.ndarray) -> np.ndarray:
@@ -132,7 +131,7 @@ class MicroMachinesEnvWrapper:
             obs = self.last_valid_obs
             info = {}
         elif self.is_first_boot:
-            obs, info = auto_detect_menu_and_enter_race(self.env, streamer=streamer, tracker=tracker, max_frames=1300)
+            obs, info = auto_detect_menu_and_enter_race(self.env, streamer=streamer, tracker=tracker, max_frames=1200)
             if hasattr(self.env, "em"):
                 try:
                     self.cached_race_start_state = self.env.em.get_state()
