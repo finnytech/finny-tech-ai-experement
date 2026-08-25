@@ -1,12 +1,27 @@
 import os
 import sys
 import gc
+import subprocess
+import time
+
+# Auto-Setup Virtual X11 Display (Xvfb) für Headless Colab Server
+if "DISPLAY" not in os.environ or not os.environ.get("DISPLAY"):
+    os.environ["DISPLAY"] = ":1"
+    try:
+        subprocess.Popen(
+            ["Xvfb", ":1", "-screen", "0", "640x480x24", "-ac", "+extension", "GLX", "+render", "-noreset"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
+        )
+        time.sleep(0.5)
+        print("[Display] 🖥️ Headless Virtual Display (Xvfb :1) erfolgreich gestartet!")
+    except Exception as e:
+        print(f"[Display] Xvfb notice: {e}")
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
-import time
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -52,7 +67,6 @@ def make_real_sega_env():
 
     print("[Env] 🎮 Initialisiere echten Genesis Plus GX Emulator für Micro Machines 2...")
     
-    # Clean load with ALL integrations
     try:
         env = retro.make(
             game="MicroMachines2-Genesis",
