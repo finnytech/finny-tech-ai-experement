@@ -38,8 +38,8 @@ from env_wrapper import MicroMachinesEnvWrapper, ACTION_NAMES
 
 _GLOBAL_RETRO_ENV = None
 
-def close_existing_retro_env():
-    """Closes any previously active Retro emulator instance to prevent singleton collisions."""
+def force_cleanup_all_retro_instances():
+    """Aggressively finds and closes all existing RetroEnv and RetroEmulator C++ singletons in memory."""
     global _GLOBAL_RETRO_ENV
     if _GLOBAL_RETRO_ENV is not None:
         try:
@@ -47,12 +47,23 @@ def close_existing_retro_env():
         except Exception:
             pass
         _GLOBAL_RETRO_ENV = None
+
+    try:
+        import retro
+        for obj in list(gc.get_objects()):
+            try:
+                if isinstance(obj, retro.RetroEnv):
+                    obj.close()
+            except Exception:
+                pass
+    except Exception:
+        pass
     gc.collect()
 
 def make_real_sega_env():
     """Lädt das echte 16-Bit Sega Mega Drive Spiel Micro Machines 2 in stable-retro."""
     global _GLOBAL_RETRO_ENV
-    close_existing_retro_env()
+    force_cleanup_all_retro_instances()
 
     import retro
     import retro.data
@@ -77,7 +88,7 @@ def make_real_sega_env():
         return env
     except Exception as e:
         print(f"[Env] Versuche direkten Game-Load ({e})...")
-        close_existing_retro_env()
+        force_cleanup_all_retro_instances()
         env = retro.make(game="MicroMachines2-Genesis")
         _GLOBAL_RETRO_ENV = env
         print("[Env] ✅ ECHTES SEGA MEGA DRIVE SPIEL GELADEN!")
