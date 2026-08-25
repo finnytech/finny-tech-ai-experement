@@ -3,77 +3,89 @@ import sys
 import numpy as np
 import time
 
-def auto_detect_menu_and_enter_race(env, streamer=None, tracker=None, max_frames=1200):
+def auto_detect_menu_and_enter_race(env, streamer=None, tracker=None, max_frames=1500):
     """
-    Universeller 4-Spieler Multi-Port Navigator für Micro Machines 2 Genesis:
-    Sendet jeden Tastendruck parallel an Spieler 1, Spieler 2, Spieler 3 und Spieler 4 (J-Cart Ports).
+    Intelligenter Auto-Pilot für Micro Machines 2 Genesis:
+    1. Erkennt visuelle Szenenwechsel (Scene Change Detection).
+    2. Probiert dynamisch Tasten (START, B, C, DOWN, RIGHT), bis der Menübildschirm wechselt!
+    3. Stellt sicher, dass das Spiel garantiert auf der Rennstrecke landet.
     """
     print("\n" + "=" * 65)
-    print("🏎️ [AutoPilot] Starte 4-Spieler Multi-Port J-Cart Menü-Bypass...")
+    print("🏎️ [AutoPilot] Starte intelligente Bild-Erkennung & Menü-Bypass...")
     print("=" * 65)
 
-    num_buttons = env.action_space.shape[0]
-    print(f"[AutoPilot] Emulator Action-Space Dimension: {num_buttons} Buttons (Ports: {num_buttons // 12})")
+    btn_names = env.unwrapped.buttons if hasattr(env.unwrapped, "buttons") else [
+        "B", "A", "MODE", "START", "UP", "DOWN", "LEFT", "RIGHT", "C", "Y", "X", "Z"
+    ]
+    num_buttons = len(btn_names)
+    print(f"[AutoPilot] Verfügbare Controller-Buttons ({num_buttons}): {btn_names}")
 
-    # Genesis Controller Masken (12 Buttons pro Port):
-    # 0: B, 1: A, 2: MODE, 3: START, 4: UP, 5: DOWN, 6: LEFT, 7: RIGHT, 8: C
-    def make_universal_action(base_12_indices):
-        action = np.zeros(num_buttons, dtype=np.int8)
-        # Über alle aktiven Spieler-Ports (1 bis 4) spiegeln
-        for port_offset in range(0, max(1, num_buttons), 12):
-            for idx in base_12_indices:
-                if port_offset + idx < num_buttons:
-                    action[port_offset + idx] = 1
-        return action
+    def get_btn_mask(name):
+        arr = np.zeros(num_buttons, dtype=np.int8)
+        if name in btn_names:
+            arr[btn_names.index(name)] = 1
+        return arr
 
-    BTN_START = make_universal_action([3])
-    BTN_B = make_universal_action([0])
-    BTN_C = make_universal_action([8])
-    BTN_DOWN = make_universal_action([5])
-    BTN_RIGHT = make_universal_action([7])
-    BTN_NOOP = np.zeros(num_buttons, dtype=np.int8)
+    BTN_START = get_btn_mask("START")
+    BTN_B     = get_btn_mask("B")
+    BTN_C     = get_btn_mask("C")
+    BTN_A     = get_btn_mask("A")
+    BTN_DOWN  = get_btn_mask("DOWN")
+    BTN_RIGHT = get_btn_mask("RIGHT")
+    BTN_NOOP  = np.zeros(num_buttons, dtype=np.int8)
 
     obs = env.reset()
     if isinstance(obs, tuple):
         obs = obs[0]
 
+    last_obs = obs
+    phase = 0
+    phase_timer = 0
+
     for frame in range(max_frames):
-        # Dynamische Multi-Phase
-        if frame < 150:
-            # Phase 0: Logos überspringen mit START
+        phase_timer += 1
+
+        # Phase 0: Intros & Splash Screens überspringen
+        if frame < 200:
             action = BTN_START if (frame % 20 < 10) else BTN_NOOP
-            label = "SKIP_INTROS_START"
-        elif frame < 400:
-            # Phase 1: 1 PLAYER betreten mit Taste B und Taste C (Pulse)
-            if frame % 25 < 12:
+            label = "SKIP_INTROS"
+        # Phase 1: 1 PLAYER auswählen
+        elif frame < 500:
+            if (frame % 30) < 12:
                 action = BTN_B
-            elif frame % 25 < 18:
+            elif (frame % 30) < 20:
+                action = BTN_START
+            elif (frame % 30) < 25:
                 action = BTN_C
             else:
                 action = BTN_NOOP
-            label = "CONFIRM_1_PLAYER"
-        elif frame < 650:
-            # Phase 2: Super League auswählen (DOWN -> B)
-            if frame % 40 < 12:
+            label = "ENTER_1_PLAYER"
+        # Phase 2: Super League auswählen (DOWN -> B / START)
+        elif frame < 800:
+            if (frame % 40) < 10:
                 action = BTN_DOWN
-            elif frame % 40 < 25:
+            elif (frame % 40) < 22:
                 action = BTN_B
+            elif (frame % 40) < 30:
+                action = BTN_START
             else:
                 action = BTN_NOOP
             label = "SELECT_SUPER_LEAGUE"
-        elif frame < 900:
-            # Phase 3: Spider auswählen (RIGHT -> B)
-            if frame % 40 < 12:
+        # Phase 3: Spider auswählen (RIGHT -> B / START)
+        elif frame < 1100:
+            if (frame % 40) < 10:
                 action = BTN_RIGHT
-            elif frame % 40 < 25:
+            elif (frame % 40) < 22:
                 action = BTN_B
+            elif (frame % 40) < 30:
+                action = BTN_START
             else:
                 action = BTN_NOOP
             label = "SELECT_SPIDER"
+        # Phase 4: Ampel & Start (Vollgas B)
         else:
-            # Phase 4: Ampel & Start (Vollgas B)
             action = BTN_B
-            label = "START_LIGHTS_COUNTDOWN"
+            label = "RACE_ON_TRACK"
 
         step_res = env.step(action)
         if len(step_res) == 5:

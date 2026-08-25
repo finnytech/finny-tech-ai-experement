@@ -70,7 +70,7 @@ def force_cleanup_all_retro_instances():
     gc.collect()
 
 def make_real_sega_env():
-    """Lädt das echte 16-Bit Sega Mega Drive Spiel mit 4 J-Cart Spieler-Ports in stable-retro."""
+    """Lädt das echte 16-Bit Sega Mega Drive Spiel in stable-retro."""
     global _GLOBAL_RETRO_ENV
     force_cleanup_all_retro_instances()
 
@@ -89,25 +89,16 @@ def make_real_sega_env():
     except Exception:
         pass
 
-    print("[Env] 🎮 Initialisiere echten Genesis Plus GX Emulator mit 4-Spieler J-Cart Ports...")
+    print("[Env] 🎮 Initialisiere echten Genesis Plus GX Emulator für Micro Machines 2...")
     
-    # Enable players=4 for complete J-Cart controller coverage
-    try:
-        env = retro.make(
-            game="MicroMachines2-Genesis",
-            inttype=retro.data.Integrations.ALL,
-            players=4,
-            render_mode="rgb_array"
-        )
-    except Exception:
-        env = retro.make(
-            game="MicroMachines2-Genesis",
-            inttype=retro.data.Integrations.ALL,
-            render_mode="rgb_array"
-        )
+    env = retro.make(
+        game="MicroMachines2-Genesis",
+        inttype=retro.data.Integrations.ALL,
+        render_mode="rgb_array"
+    )
     
     _GLOBAL_RETRO_ENV = env
-    print(f"[Env] ✅ ECHTES SEGA MEGA DRIVE SPIEL GELADEN! (Action Space: {env.action_space.shape[0]} Buttons)")
+    print(f"[Env] ✅ ECHTES SEGA MEGA DRIVE SPIEL GELADEN! Buttons: {env.unwrapped.buttons}")
     return env
 
 def main():

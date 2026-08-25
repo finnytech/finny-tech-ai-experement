@@ -6,13 +6,13 @@ import json
 import urllib.request
 import zipfile
 import shutil
-import subprocess
 
 DIRECT_VERIFIED_ROM_URL = "https://archive.org/download/Micro_Machines_2_Turbo_Tournament_Europe.md/Micro_Machines_2_Turbo_Tournament_Europe.md"
 EXPECTED_SHA1 = "cb5fb33212592809639b37c2babd72a7953fa102"
 
 METADATA_JSON = {
-    "default_state": None
+    "default_state": None,
+    "players": 1
 }
 
 DATA_JSON = {
@@ -91,9 +91,6 @@ def install_rom_bytes(target_dir, rom_path_or_bytes):
     return False
 
 def ensure_real_rom():
-    """
-    Ensures that the real Sega Genesis Micro Machines 2 ROM is present.
-    """
     target_dir = get_retro_custom_dir()
     rom_dest = os.path.join(target_dir, "rom.md")
     sha_dest = os.path.join(target_dir, "rom.sha")
@@ -117,7 +114,7 @@ def ensure_real_rom():
             f.write(calc_sha + "\n")
         return True
 
-    # 3. Check for bundled rom.md in current directory or /content/
+    # 3. Check local paths
     current_dir = os.path.dirname(os.path.abspath(__file__))
     possible_local = [
         os.path.join(current_dir, "rom.md"),
@@ -126,23 +123,9 @@ def ensure_real_rom():
     ]
     for p in possible_local:
         if os.path.exists(p) and os.path.getsize(p) > 100000:
-            print(f"[ROM-Setup] 📦 Gefundenes lokales ROM wird verwendet: {p}")
+            print(f"[ROM-Setup] 📦 Gefundenes lokales ROM: {p}")
             if install_rom_bytes(target_dir, p):
                 return True
-
-    # 4. Download directly from verified archive endpoint
-    try:
-        print(f"[ROM-Setup] Lade verifiziertes Sega Mega Drive ROM von: {DIRECT_VERIFIED_ROM_URL}...")
-        req = urllib.request.Request(
-            DIRECT_VERIFIED_ROM_URL,
-            headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
-        )
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            data = resp.read()
-            if len(data) > 500000:
-                return install_rom_bytes(target_dir, data)
-    except Exception as e:
-        print(f"[ROM-Setup] Download notice: {e}")
 
     return os.path.exists(rom_dest)
 

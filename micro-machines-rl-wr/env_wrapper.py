@@ -23,19 +23,6 @@ ACTION_NAMES = [
     "BRAKE + RIGHT"  # 8: Hard Turn / Handbremse Rechts
 ]
 
-# Standard 12-Button Mask pro Port (0: B, 1: A, 2: MODE, 3: START, 4: UP, 5: DOWN, 6: LEFT, 7: RIGHT, 8: C)
-ACTION_BUTTONS = [
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], # 0: NOOP
-    [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], # 1: B (Gas)
-    [0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0], # 2: C (Bremse)
-    [0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0], # 3: LEFT
-    [0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0], # 4: RIGHT
-    [1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0], # 5: B + LEFT
-    [1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0], # 6: B + RIGHT
-    [0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0], # 7: C + LEFT
-    [0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0], # 8: C + RIGHT
-]
-
 class MicroMachinesEnvWrapper:
     def __init__(
         self,
@@ -51,7 +38,31 @@ class MicroMachinesEnvWrapper:
         self.target_wr_ms = target_wr_ms
         self.game_mode = game_mode
 
-        self.num_action_buttons = retro_env.action_space.shape[0]
+        btn_names = retro_env.unwrapped.buttons if hasattr(retro_env.unwrapped, "buttons") else [
+            "B", "A", "MODE", "START", "UP", "DOWN", "LEFT", "RIGHT", "C", "Y", "X", "Z"
+        ]
+        self.btn_names = btn_names
+        self.num_buttons = len(btn_names)
+
+        # Pre-build action masks based on exact environment button names
+        def build_mask(active_names):
+            arr = np.zeros(self.num_buttons, dtype=np.int8)
+            for n in active_names:
+                if n in self.btn_names:
+                    arr[self.btn_names.index(n)] = 1
+            return arr
+
+        self.action_arrays = [
+            build_mask([]),                    # 0: NOOP
+            build_mask(["B"]),                 # 1: ACCEL (B)
+            build_mask(["C"]),                 # 2: BRAKE (C)
+            build_mask(["LEFT"]),              # 3: STEER_L
+            build_mask(["RIGHT"]),             # 4: STEER_R
+            build_mask(["B", "LEFT"]),         # 5: ACCEL + LEFT
+            build_mask(["B", "RIGHT"]),        # 6: ACCEL + RIGHT
+            build_mask(["C", "LEFT"]),         # 7: BRAKE + LEFT
+            build_mask(["C", "RIGHT"]),        # 8: BRAKE + RIGHT
+        ]
 
         self.frame_buffer = []
         self.ram_buffer = []
@@ -61,16 +72,6 @@ class MicroMachinesEnvWrapper:
         self.cached_race_start_state = None
         self.is_first_boot = True
         self.last_valid_obs = None
-
-    def get_action_array(self, action_idx: int) -> np.ndarray:
-        raw_12 = ACTION_BUTTONS[action_idx]
-        arr = np.zeros(self.num_action_buttons, dtype=np.int8)
-        # Über alle Spieler-Ports (Port 1, Port 2, J-Cart 3, J-Cart 4) spiegeln
-        for port_offset in range(0, max(1, self.num_action_buttons), 12):
-            for i, val in enumerate(raw_12):
-                if port_offset + i < self.num_action_buttons:
-                    arr[port_offset + i] = val
-        return arr
 
     def preprocess_frame(self, raw_frame: np.ndarray) -> np.ndarray:
         if raw_frame is None:
@@ -131,11 +132,11 @@ class MicroMachinesEnvWrapper:
             obs = self.last_valid_obs
             info = {}
         elif self.is_first_boot:
-            obs, info = auto_detect_menu_and_enter_race(self.env, streamer=streamer, tracker=tracker, max_frames=1200)
+            obs, info = auto_detect_menu_and_enter_race(self.env, streamer=streamer, tracker=tracker, max_frames=1300)
             if hasattr(self.env, "em"):
                 try:
                     self.cached_race_start_state = self.env.em.get_state()
-                    print("[Env] 💾 Startgitter-Zustand (SaveState) im RAM gecacht für blitzschnellen Rundenstart!")
+                    print("[Env] 💾 Startgitter-Zustand (SaveState) im RAM gecacht!")
                 except Exception:
                     pass
             self.is_first_boot = False
@@ -165,7 +166,7 @@ class MicroMachinesEnvWrapper:
         )
 
     def step(self, action_idx: int):
-        button_array = self.get_action_array(action_idx)
+        button_array = self.action_arrays[action_idx]
         accumulated_reward = 0.0
         done = False
         last_obs = None
