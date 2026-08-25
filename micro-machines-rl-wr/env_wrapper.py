@@ -111,18 +111,15 @@ class MicroMachinesEnvWrapper:
         }
         return ram_vector, telemetry
 
-    def reset(self):
+    def reset(self, streamer=None, tracker=None):
         # 1. Schneller Restore auf den Startplatz
         if hasattr(self.env, "em") and self.cached_race_start_state is not None:
             self.env.em.set_state(self.cached_race_start_state)
-            try:
-                obs = self.env.em.get_screen()
-            except Exception:
-                obs = self.last_valid_obs
+            obs = self.last_valid_obs
             info = {}
         elif self.is_first_boot:
             reset_res = self.env.reset()
-            obs, info = self.boot_manager.execute_boot_sequence(self.env)
+            obs, info = self.boot_manager.execute_boot_sequence(self.env, streamer=streamer, tracker=tracker)
             if hasattr(self.env, "em"):
                 try:
                     self.cached_race_start_state = self.env.em.get_state()

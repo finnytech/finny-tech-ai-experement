@@ -148,7 +148,7 @@ def main():
     print("\n🏁 Starting REAL Sega Mega Drive World Record Speedrun Training...\n")
 
     for ep in range(1, total_episodes + 1):
-        frames_seq, rams_seq, raw_obs, telemetry = env.reset()
+        frames_seq, rams_seq, raw_obs, telemetry = env.reset(streamer=streamer, tracker=tracker)
         ep_reward = 0.0
         done = False
 
