@@ -2,18 +2,18 @@ import time
 import numpy as np
 from typing import List, Tuple, Dict, Any
 
-# Genesis Controller Buttons: [B, A, MODE, START, UP, DOWN, LEFT, RIGHT, C, Y, X, Z]
+# Standard Sega Genesis Button Array (12 Buttons):
+# [B, A, MODE, START, UP, DOWN, LEFT, RIGHT, C, Y, X, Z]
 BTNS = {
-    "NOOP":        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-    "START":       [0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0],
-    "B":           [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-    "A":           [0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-    "C":           [0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0],
-    "CONFIRM":     [1, 1, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0], # B + A + START + C
-    "UP":          [0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0],
-    "DOWN":        [0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0],
-    "LEFT":        [0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0],
-    "RIGHT":       [0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0],
+    "NOOP":   [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    "START":  [0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0], # Button 3: START
+    "B":      [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], # Button 0: B (Gas / Select)
+    "A":      [0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], # Button 1: A
+    "C":      [0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0], # Button 8: C (Confirm)
+    "UP":     [0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0], # Button 4: UP
+    "DOWN":   [0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0], # Button 5: DOWN
+    "LEFT":   [0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0], # Button 6: LEFT
+    "RIGHT":  [0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0], # Button 7: RIGHT
 }
 
 class AutoMenuBootManager:
@@ -67,46 +67,46 @@ class AutoMenuBootManager:
         print("[BootManager] 🏎️ Starte Boot-Sequenz & überspringe Intros...")
 
         # Phase 1: Sega & Codemasters Splash Screens überspringen
-        self.step_frames(env, BTNS["NOOP"], 60, streamer, tracker)
-        for _ in range(8):
+        self.step_frames(env, BTNS["NOOP"], 70, streamer, tracker)
+        for _ in range(6):
             self.press_and_release(env, "START", press_frames=8, release_frames=12, streamer=streamer, tracker=tracker)
 
-        # Phase 2: Hauptmenü erreicht -> 1 PLAYER auswählen
-        print("[BootManager] 🎮 Wähle '1 PLAYER'...")
+        # Phase 2: Hauptmenü 'PLEASE SELECT OPTION' -> '1 PLAYER' bestätigen
+        print("[BootManager] 🎮 Bestätige '1 PLAYER'...")
         self.step_frames(env, BTNS["NOOP"], 30, streamer, tracker)
-        for _ in range(4):
-            self.press_and_release(env, "CONFIRM", press_frames=12, release_frames=15, streamer=streamer, tracker=tracker)
+        # Drücke C und B (die Standard-Bestätigungstasten in MM2)
+        self.press_and_release(env, "C", press_frames=12, release_frames=15, streamer=streamer, tracker=tracker)
+        self.press_and_release(env, "B", press_frames=12, release_frames=15, streamer=streamer, tracker=tracker)
+        self.press_and_release(env, "START", press_frames=12, release_frames=15, streamer=streamer, tracker=tracker)
 
         # Phase 3: Spielmodus wählen
         self.step_frames(env, BTNS["NOOP"], 45, streamer, tracker)
         if self.mode == "SUPER_LEAGUE_HARD":
             print("[BootManager] 🏆 Wähle 'SUPER LEAGUE' (Division 1)...")
             self.press_and_release(env, "DOWN", press_frames=12, release_frames=15, streamer=streamer, tracker=tracker)
-            for _ in range(4):
-                self.press_and_release(env, "CONFIRM", press_frames=12, release_frames=15, streamer=streamer, tracker=tracker)
+            self.press_and_release(env, "C", press_frames=12, release_frames=15, streamer=streamer, tracker=tracker)
+            self.press_and_release(env, "B", press_frames=12, release_frames=15, streamer=streamer, tracker=tracker)
 
             # Division 1 bestätigen
             self.step_frames(env, BTNS["NOOP"], 45, streamer, tracker)
-            for _ in range(3):
-                self.press_and_release(env, "CONFIRM", press_frames=12, release_frames=15, streamer=streamer, tracker=tracker)
+            self.press_and_release(env, "C", press_frames=12, release_frames=15, streamer=streamer, tracker=tracker)
+            self.press_and_release(env, "B", press_frames=12, release_frames=15, streamer=streamer, tracker=tracker)
 
             # Fahrer 'Spider' auswählen
             print("[BootManager] 🕷️ Wähle Fahrer 'Spider' (Top-Speed)...")
             self.step_frames(env, BTNS["NOOP"], 45, streamer, tracker)
             self.press_and_release(env, "RIGHT", press_frames=12, release_frames=15, streamer=streamer, tracker=tracker)
-            for _ in range(4):
-                self.press_and_release(env, "CONFIRM", press_frames=12, release_frames=15, streamer=streamer, tracker=tracker)
+            self.press_and_release(env, "C", press_frames=12, release_frames=15, streamer=streamer, tracker=tracker)
+            self.press_and_release(env, "B", press_frames=12, release_frames=15, streamer=streamer, tracker=tracker)
 
         elif self.mode == "TIME_TRIAL_RECORD":
             print("[BootManager] ⏱️ Wähle 'TIME TRIAL'...")
             self.press_and_release(env, "DOWN", press_frames=12, release_frames=12, streamer=streamer, tracker=tracker)
             self.press_and_release(env, "DOWN", press_frames=12, release_frames=12, streamer=streamer, tracker=tracker)
-            for _ in range(4):
-                self.press_and_release(env, "CONFIRM", press_frames=12, release_frames=15, streamer=streamer, tracker=tracker)
+            self.press_and_release(env, "C", press_frames=12, release_frames=15, streamer=streamer, tracker=tracker)
             # Track bestätigen
             self.step_frames(env, BTNS["NOOP"], 45, streamer, tracker)
-            for _ in range(3):
-                self.press_and_release(env, "CONFIRM", press_frames=12, release_frames=15, streamer=streamer, tracker=tracker)
+            self.press_and_release(env, "C", press_frames=12, release_frames=15, streamer=streamer, tracker=tracker)
 
         # Phase 4: Strecken-Ladebildschirm & Countdown (3, 2, 1, GO!)
         print("[BootManager] 🏁 Warte auf Strecken-Ladebildschirm & Startampel...")
