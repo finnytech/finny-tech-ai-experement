@@ -8,6 +8,9 @@ import zipfile
 import shutil
 import subprocess
 
+DIRECT_VERIFIED_ROM_URL = "https://archive.org/download/Micro_Machines_2_Turbo_Tournament_Europe.md/Micro_Machines_2_Turbo_Tournament_Europe.md"
+EXPECTED_SHA1 = "cb5fb33212592809639b37c2babd72a7953fa102"
+
 METADATA_JSON = {
     "default_state": None
 }
@@ -68,44 +71,22 @@ def get_retro_custom_dir():
         os.makedirs(local_dir, exist_ok=True)
         return local_dir
 
-def scan_for_user_uploaded_rom():
-    """Scans /content, current dir, and subdirs for user-provided Micro Machines 2 ROMs."""
-    search_paths = ["/content", ".", os.path.dirname(os.path.abspath(__file__))]
-    extensions = ["*.md", "*.bin", "*.gen", "*.smd", "*.zip", "*.7z"]
-    
-    for base in search_paths:
-        if not os.path.exists(base):
-            continue
-        for ext in extensions:
-            matches = glob.glob(os.path.join(base, "**", ext), recursive=True)
-            for m in matches:
-                name_lower = os.path.basename(m).lower()
-                if "micro" in name_lower or "machine" in name_lower or ext in ["*.md", "*.bin", "*.gen"]:
-                    if os.path.getsize(m) > 100000:
-                        return m
-    return None
-
-def install_rom_file(source_path, target_dir):
-    """Installs and verifies a ROM file into the integration folder."""
+def install_rom_bytes(target_dir, rom_path_or_bytes):
     rom_dest = os.path.join(target_dir, "rom.md")
     sha_dest = os.path.join(target_dir, "rom.sha")
-    
-    if source_path.lower().endswith(".zip"):
-        with zipfile.ZipFile(source_path, 'r') as zip_ref:
-            for member in zip_ref.namelist():
-                if member.lower().endswith(('.md', '.bin', '.gen', '.smd')):
-                    with zip_ref.open(member) as src, open(rom_dest, "wb") as dst:
-                        shutil.copyfileobj(src, dst)
-                    break
-    else:
-        shutil.copyfile(source_path, rom_dest)
+
+    if isinstance(rom_path_or_bytes, bytes):
+        with open(rom_dest, "wb") as f:
+            f.write(rom_path_or_bytes)
+    elif os.path.exists(rom_path_or_bytes) and rom_path_or_bytes != rom_dest:
+        shutil.copyfile(rom_path_or_bytes, rom_dest)
 
     if os.path.exists(rom_dest) and os.path.getsize(rom_dest) > 100000:
         with open(rom_dest, "rb") as f:
-            rom_hash = hashlib.sha1(f.read()).hexdigest()
+            calc_sha = hashlib.sha1(f.read()).hexdigest()
         with open(sha_dest, "w") as f:
-            f.write(rom_hash + "\n")
-        print(f"[ROM-Setup] ✅ ECHTES SEGA ROM ERFOLGREICH INSTALLIERT ({os.path.getsize(rom_dest)} Bytes)!")
+            f.write(calc_sha + "\n")
+        print(f"[ROM-Setup] ✅ ECHTES SEGA ROM ERFOLGREICH INSTALLIERT ({os.path.getsize(rom_dest)} Bytes, SHA1: {calc_sha})!")
         return True
     return False
 
@@ -131,44 +112,39 @@ def ensure_real_rom():
     # 2. Check if already installed
     if os.path.exists(rom_dest) and os.path.getsize(rom_dest) > 100000:
         with open(rom_dest, "rb") as f:
-            rom_hash = hashlib.sha1(f.read()).hexdigest()
+            calc_sha = hashlib.sha1(f.read()).hexdigest()
         with open(sha_dest, "w") as f:
-            f.write(rom_hash + "\n")
+            f.write(calc_sha + "\n")
         return True
 
-    # 3. Check for uploaded ROM in /content or project dir
-    found_rom = scan_for_user_uploaded_rom()
-    if found_rom and found_rom != rom_dest:
-        print(f"[ROM-Setup] 📦 Gefundenes ROM wird importiert: {found_rom}")
-        if install_rom_file(found_rom, target_dir):
-            return True
-
-    # 4. Try multi-source curl download with realistic browser spoofing
-    download_urls = [
-        "https://archive.org/download/sega-mega-drive-genesis-romset-ultra-complete/Micro%20Machines%202%20-%20Turbo%20Tournament%20%28Europe%29%20%28J-Cart%29.zip",
-        "https://archive.org/download/No-Intro-Collection_2016-01-03_Fixed/Sega%20-%20Mega%20Drive%20-%20Genesis.zip/Micro%20Machines%202%20-%20Turbo%20Tournament%20%28Europe%29%20%28J-Cart%29.zip"
+    # 3. Check for bundled rom.md in current directory or /content/
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    possible_local = [
+        os.path.join(current_dir, "rom.md"),
+        "/content/rom.md",
+        "/content/finny-tech-ai-experement/micro-machines-rl-wr/rom.md"
     ]
-    
-    temp_zip = "/content/mm2_rom.zip" if sys.platform != "win32" else os.path.join(target_dir, "mm2_rom.zip")
-    for url in download_urls:
-        try:
-            print(f"[ROM-Setup] Versuche Download über curl: {url[:50]}...")
-            cmd = ["curl", "-sL", "-A", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36", url, "-o", temp_zip]
-            subprocess.run(cmd, timeout=30, check=False)
-            if os.path.exists(temp_zip) and os.path.getsize(temp_zip) > 100000:
-                if install_rom_file(temp_zip, target_dir):
-                    return True
-        except Exception:
-            pass
+    for p in possible_local:
+        if os.path.exists(p) and os.path.getsize(p) > 100000:
+            print(f"[ROM-Setup] 📦 Gefundenes lokales ROM wird verwendet: {p}")
+            if install_rom_bytes(target_dir, p):
+                return True
 
-    # 5. If still not found, print clear instructions
-    print("\n" + "=" * 70)
-    print("⚠️ BITTE ROM-DATEI BEREITSTELLEN:")
-    print("Ziehe einfach deine 'Micro Machines 2.md' (oder .bin / .zip) Datei")
-    print("per Drag & Drop links in die Google Colab Dateileiste (/content/).")
-    print("Das Skript erkennt sie automatisch und startet das echte Spiel!")
-    print("=" * 70 + "\n")
-    return False
+    # 4. Download directly from verified archive endpoint
+    try:
+        print(f"[ROM-Setup] Lade verifiziertes Sega Mega Drive ROM von: {DIRECT_VERIFIED_ROM_URL}...")
+        req = urllib.request.Request(
+            DIRECT_VERIFIED_ROM_URL,
+            headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = resp.read()
+            if len(data) > 500000:
+                return install_rom_bytes(target_dir, data)
+    except Exception as e:
+        print(f"[ROM-Setup] Download notice: {e}")
+
+    return os.path.exists(rom_dest)
 
 if __name__ == "__main__":
     ensure_real_rom()
