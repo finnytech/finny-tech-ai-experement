@@ -57,10 +57,16 @@ class MicroMachinesEnvWrapper:
         self.total_frames_rendered = 0
         self.cached_race_start_state = None
         self.is_first_boot = True
+        self.last_valid_obs = None
 
     def preprocess_frame(self, raw_frame: np.ndarray) -> np.ndarray:
         if raw_frame is None:
-            return np.zeros((84, 84, 1), dtype=np.float32)
+            if self.last_valid_obs is not None:
+                raw_frame = self.last_valid_obs
+            else:
+                return np.zeros((84, 84, 1), dtype=np.float32)
+        
+        self.last_valid_obs = raw_frame
         if len(raw_frame.shape) == 3 and raw_frame.shape[2] == 3:
             gray = cv2.cvtColor(raw_frame, cv2.COLOR_RGB2GRAY)
         elif len(raw_frame.shape) == 3 and raw_frame.shape[2] == 1:
@@ -109,10 +115,10 @@ class MicroMachinesEnvWrapper:
         # 1. Schneller Restore auf den Startplatz
         if hasattr(self.env, "em") and self.cached_race_start_state is not None:
             self.env.em.set_state(self.cached_race_start_state)
-            if hasattr(self.env, "get_screen"):
-                obs = self.env.get_screen()
-            else:
-                obs = np.zeros((224, 320, 3), dtype=np.uint8)
+            try:
+                obs = self.env.em.get_screen()
+            except Exception:
+                obs = self.last_valid_obs
             info = {}
         elif self.is_first_boot:
             reset_res = self.env.reset()
@@ -144,7 +150,7 @@ class MicroMachinesEnvWrapper:
         return (
             np.array(self.frame_buffer)[np.newaxis, ...],
             np.array(self.ram_buffer)[np.newaxis, ...],
-            obs,
+            obs if obs is not None else self.last_valid_obs,
             telemetry
         )
 
@@ -200,4 +206,4 @@ class MicroMachinesEnvWrapper:
         frames_seq = np.array(self.frame_buffer)[np.newaxis, ...]
         rams_seq = np.array(self.ram_buffer)[np.newaxis, ...]
 
-        return frames_seq, rams_seq, reward, done, last_obs, telemetry
+        return frames_seq, rams_seq, reward, done, last_obs if last_obs is not None else self.last_valid_obs, telemetry
