@@ -9,7 +9,7 @@ BTNS = {
     "B":           [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
     "A":           [0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
     "C":           [0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0],
-    "CONFIRM":     [1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0], # B + START
+    "CONFIRM":     [1, 1, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0], # B + A + START + C
     "UP":          [0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0],
     "DOWN":        [0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0],
     "LEFT":        [0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0],
@@ -19,64 +19,42 @@ BTNS = {
 class AutoMenuBootManager:
     """
     Präziser Menü-Navigator für Micro Machines 2 Sega Mega Drive:
-    1. Überspringt Intro & Titelbildschirm
-    2. Bestätigt '1 PLAYER'
-    3. Wählt 'SUPER LEAGUE' (Division 1)
-    4. Wählt den Fahrer 'Spider'
-    5. Wartet die Rennstrecke und Startampel ab -> Übergabe an den Agenten!
+    Überspringt alle Sega/Codemasters Intros, navigiert durch:
+    1 PLAYER -> SUPER LEAGUE (Div 1) -> Spider -> Rennstrecke!
     """
 
     def __init__(self, mode: str = "SUPER_LEAGUE_HARD"):
         self.mode = mode
 
-    @staticmethod
-    def get_macro_sequence(mode: str = "SUPER_LEAGUE_HARD") -> List[Tuple[List[int], int]]:
-        seq = []
-        # 1. Intro & Codemasters Splash Screen skippen (B + START drücken)
-        seq.append((BTNS["NOOP"], 60))
-        seq.append((BTNS["CONFIRM"], 15))
-        seq.append((BTNS["NOOP"], 45))
-        seq.append((BTNS["CONFIRM"], 15))
-        seq.append((BTNS["NOOP"], 60))
+    def step_frames(self, env, buttons: List[int], count: int, streamer=None, tracker=None) -> Tuple[np.ndarray, Dict[str, Any]]:
+        last_obs = None
+        last_info = {}
+        for _ in range(count):
+            step_res = env.step(buttons)
+            if len(step_res) == 5:
+                obs, r, d, tr, info = step_res
+            else:
+                obs, r, d, info = step_res
+            last_obs = obs
+            last_info = info if isinstance(info, dict) else {}
 
-        # 2. Im Hauptmenü '1 PLAYER' bestätigen
-        seq.append((BTNS["CONFIRM"], 20))
-        seq.append((BTNS["NOOP"], 60))
-        seq.append((BTNS["B"], 20))
-        seq.append((BTNS["NOOP"], 60))
+            if streamer is not None and last_obs is not None:
+                summary = tracker.get_summary_dict() if tracker else {}
+                streamer.update_frame(
+                    raw_bgr_frame=last_obs,
+                    tracker_summary=summary,
+                    current_lap_ms=0.0,
+                    speed=0.0,
+                    action_name="NAVIGATING_MENU",
+                    episode=0,
+                    reward=0.0
+                )
+        return last_obs, last_info
 
-        if mode == "SUPER_LEAGUE_HARD":
-            # 3. 1-Player Untermenü: Runter auf 'SUPER LEAGUE'
-            seq.append((BTNS["DOWN"], 15))
-            seq.append((BTNS["NOOP"], 25))
-            seq.append((BTNS["CONFIRM"], 20)) # SUPER LEAGUE bestätigen
-            seq.append((BTNS["NOOP"], 60))
-
-            # 4. Division 1 (Härtester Modus) bestätigen
-            seq.append((BTNS["CONFIRM"], 20))
-            seq.append((BTNS["NOOP"], 60))
-
-            # 5. Fahrer 'Spider' auswählen (rechts)
-            seq.append((BTNS["RIGHT"], 15))
-            seq.append((BTNS["NOOP"], 25))
-            seq.append((BTNS["CONFIRM"], 20)) # Spider bestätigen
-            seq.append((BTNS["NOOP"], 120))   # Streckenlade-Bildschirm abwarten
-
-        elif mode == "TIME_TRIAL_RECORD":
-            # 3. 1-Player Untermenü: Runter auf 'TIME TRIAL'
-            seq.append((BTNS["DOWN"], 15))
-            seq.append((BTNS["NOOP"], 20))
-            seq.append((BTNS["DOWN"], 15))
-            seq.append((BTNS["NOOP"], 20))
-            seq.append((BTNS["CONFIRM"], 20))
-            seq.append((BTNS["NOOP"], 60))
-            # Track bestätigen
-            seq.append((BTNS["CONFIRM"], 20))
-            seq.append((BTNS["NOOP"], 120))
-
-        # 6. Countdown auf der Strecke ('3, 2, 1, GO!') abwarten
-        seq.append((BTNS["NOOP"], 180))
-        return seq
+    def press_and_release(self, env, button_name: str, press_frames: int = 10, release_frames: int = 15, streamer=None, tracker=None):
+        btn = BTNS.get(button_name, BTNS["NOOP"])
+        self.step_frames(env, btn, press_frames, streamer, tracker)
+        return self.step_frames(env, BTNS["NOOP"], release_frames, streamer, tracker)
 
     def execute_boot_sequence(self, env, *args, **kwargs) -> Tuple[np.ndarray, Dict[str, Any]]:
         streamer = kwargs.get("streamer", None)
@@ -86,44 +64,53 @@ class AutoMenuBootManager:
         if len(args) > 1 and tracker is None:
             tracker = args[1]
 
-        macro = self.get_macro_sequence(self.mode)
-        last_obs = None
-        last_info = {}
+        print("[BootManager] 🏎️ Starte Boot-Sequenz & überspringe Intros...")
 
-        print(f"[BootManager] 🏎️ Navigiere durch Startmenü (1 PLAYER -> {self.mode} -> Spider)...")
-        for buttons, frame_count in macro:
-            for _ in range(frame_count):
-                step_res = env.step(buttons)
-                if len(step_res) == 5:
-                    obs, r, d, tr, info = step_res
-                    done = d or tr
-                else:
-                    obs, r, d, info = step_res
-                    done = d
-                
-                last_obs = obs
-                last_info = info if isinstance(info, dict) else {}
+        # Phase 1: Sega & Codemasters Splash Screens überspringen
+        self.step_frames(env, BTNS["NOOP"], 60, streamer, tracker)
+        for _ in range(8):
+            self.press_and_release(env, "START", press_frames=8, release_frames=12, streamer=streamer, tracker=tracker)
 
-                # Live-Stream während des Menü-Bypasses aktualisieren
-                if streamer is not None and last_obs is not None:
-                    summary = tracker.get_summary_dict() if tracker else {}
-                    streamer.update_frame(
-                        raw_bgr_frame=last_obs,
-                        tracker_summary=summary,
-                        current_lap_ms=0.0,
-                        speed=0.0,
-                        action_name="MENU_BOOT",
-                        episode=0,
-                        reward=0.0
-                    )
+        # Phase 2: Hauptmenü erreicht -> 1 PLAYER auswählen
+        print("[BootManager] 🎮 Wähle '1 PLAYER'...")
+        self.step_frames(env, BTNS["NOOP"], 30, streamer, tracker)
+        for _ in range(4):
+            self.press_and_release(env, "CONFIRM", press_frames=12, release_frames=15, streamer=streamer, tracker=tracker)
 
-                if done:
-                    reset_res = env.reset()
-                    if isinstance(reset_res, tuple) and len(reset_res) == 2:
-                        last_obs, last_info = reset_res
-                    else:
-                        last_obs = reset_res
-                        last_info = {}
+        # Phase 3: Spielmodus wählen
+        self.step_frames(env, BTNS["NOOP"], 45, streamer, tracker)
+        if self.mode == "SUPER_LEAGUE_HARD":
+            print("[BootManager] 🏆 Wähle 'SUPER LEAGUE' (Division 1)...")
+            self.press_and_release(env, "DOWN", press_frames=12, release_frames=15, streamer=streamer, tracker=tracker)
+            for _ in range(4):
+                self.press_and_release(env, "CONFIRM", press_frames=12, release_frames=15, streamer=streamer, tracker=tracker)
+
+            # Division 1 bestätigen
+            self.step_frames(env, BTNS["NOOP"], 45, streamer, tracker)
+            for _ in range(3):
+                self.press_and_release(env, "CONFIRM", press_frames=12, release_frames=15, streamer=streamer, tracker=tracker)
+
+            # Fahrer 'Spider' auswählen
+            print("[BootManager] 🕷️ Wähle Fahrer 'Spider' (Top-Speed)...")
+            self.step_frames(env, BTNS["NOOP"], 45, streamer, tracker)
+            self.press_and_release(env, "RIGHT", press_frames=12, release_frames=15, streamer=streamer, tracker=tracker)
+            for _ in range(4):
+                self.press_and_release(env, "CONFIRM", press_frames=12, release_frames=15, streamer=streamer, tracker=tracker)
+
+        elif self.mode == "TIME_TRIAL_RECORD":
+            print("[BootManager] ⏱️ Wähle 'TIME TRIAL'...")
+            self.press_and_release(env, "DOWN", press_frames=12, release_frames=12, streamer=streamer, tracker=tracker)
+            self.press_and_release(env, "DOWN", press_frames=12, release_frames=12, streamer=streamer, tracker=tracker)
+            for _ in range(4):
+                self.press_and_release(env, "CONFIRM", press_frames=12, release_frames=15, streamer=streamer, tracker=tracker)
+            # Track bestätigen
+            self.step_frames(env, BTNS["NOOP"], 45, streamer, tracker)
+            for _ in range(3):
+                self.press_and_release(env, "CONFIRM", press_frames=12, release_frames=15, streamer=streamer, tracker=tracker)
+
+        # Phase 4: Strecken-Ladebildschirm & Countdown (3, 2, 1, GO!)
+        print("[BootManager] 🏁 Warte auf Strecken-Ladebildschirm & Startampel...")
+        last_obs, last_info = self.step_frames(env, BTNS["NOOP"], 240, streamer, tracker)
 
         print("[BootManager] 🟢 START-AMPEL GRÜN! Steuerung auf der Rennstrecke an JAX/Flax übergeben!")
         return last_obs, last_info
